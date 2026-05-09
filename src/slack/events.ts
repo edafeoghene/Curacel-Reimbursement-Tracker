@@ -33,6 +33,7 @@ import {
 import { v4 as uuidv4 } from "uuid";
 
 import { downloadSlackFile, isPdf, isSupportedImage } from "./files.js";
+import { extractPdfPage1AsImage } from "../llm/pdf.js";
 import { ackInThread, dmUser, postEphemeral } from "./messaging.js";
 import { approverDmBlocks, manualReviewDmBlocks } from "./views.js";
 
@@ -291,9 +292,15 @@ export function resolveSubmission(
 }
 
 /**
- * Best-effort image collection for the classifier. PNG/JPG only; PDFs are
- * skipped with an audit warning per the brief; download failures are logged
- * but do not abort classification (text-only fallback works).
+ * Best-effort image collection for the classifier. PNG/JPG are downloaded
+ * directly. PDFs are downloaded and have page 1 extracted to PNG via
+ * src/llm/pdf.ts. Per PLAN.md §8, multi-page PDFs only contribute page 1
+ * to the model — this is a known limitation, not flagged per ticket.
+ *
+ * Acquisition failures (download or PDF extraction) are surfaced via
+ * `downloadFailures` and do not abort classification — the classifier runs
+ * on text only as a fallback. The audit log captures the failures for
+ * later inspection.
  */
 async function collectImages(
   files: SlackFilePartial[] | undefined,
@@ -301,34 +308,45 @@ async function collectImages(
 ): Promise<{
   images: ClassifierImage[];
   primary: SlackFilePartial | null;
-  pdfFound: boolean;
   downloadFailures: string[];
 }> {
   const images: ClassifierImage[] = [];
   const downloadFailures: string[] = [];
   let primary: SlackFilePartial | null = null;
-  let pdfFound = false;
+  const tag = trackingHintId ?? "(no-id)";
 
   for (const f of files ?? []) {
+    if (!f.url_private) continue;
+
+    // PDF: download, extract page 1 as PNG.
     if (isPdf(f)) {
-      pdfFound = true;
+      try {
+        const dl = await downloadSlackFile(f.url_private);
+        const img = await extractPdfPage1AsImage(dl.buffer);
+        images.push(img);
+        if (!primary) primary = f;
+      } catch (err) {
+        downloadFailures.push(
+          `[${tag}] PDF acquisition failed for ${f.id ?? f.name ?? "<file>"}: ${(err as Error).message}`,
+        );
+      }
       continue;
     }
+
+    // PNG/JPG: download as-is.
     if (!isSupportedImage(f)) continue;
-    if (!f.url_private) continue;
     try {
       const dl = await downloadSlackFile(f.url_private);
       images.push({ mime: dl.mime, base64: dl.buffer.toString("base64") });
       if (!primary) primary = f;
     } catch (err) {
-      const tag = trackingHintId ?? "(no-id)";
       downloadFailures.push(
         `[${tag}] failed to download ${f.id ?? f.name ?? "<file>"}: ${(err as Error).message}`,
       );
     }
   }
 
-  return { images, primary, pdfFound, downloadFailures };
+  return { images, primary, downloadFailures };
 }
 
 /**
@@ -462,8 +480,8 @@ export function makeMessageHandler(deps: HandlerDeps) {
       console.warn("[events] idempotency check failed:", err);
     }
 
-    // ---- Download images (PNG/JPG); warn on PDF ----
-    const { images, primary, pdfFound, downloadFailures } = await collectImages(
+    // ---- Download images (PNG/JPG) and extract PDF page 1 ----
+    const { images, primary, downloadFailures } = await collectImages(
       files,
       null,
     );
@@ -668,20 +686,15 @@ export function makeMessageHandler(deps: HandlerDeps) {
       },
     });
 
-    if (pdfFound) {
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: "system",
-        event_type: AUDIT_EVENTS.RECEIPT_PARSED,
-        details: { warning: "PDF receipt(s) skipped (Phase 1.0 limitation)" },
-      });
-    }
     if (downloadFailures.length > 0) {
       await safeAudit({
         tracking_id: trackingId,
         actor_user_id: "system",
         event_type: AUDIT_EVENTS.RECEIPT_PARSED,
-        details: { warning: "file download failure(s)", failures: downloadFailures },
+        details: {
+          warning: "image acquisition failure(s) — classifier ran with available inputs",
+          failures: downloadFailures,
+        },
       });
     }
     if (droppedItems.length > 0) {

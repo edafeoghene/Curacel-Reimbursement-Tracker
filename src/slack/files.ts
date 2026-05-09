@@ -1,8 +1,9 @@
 // Auth'd Slack file download.
 //
-// Slack's `url_private` requires a Bearer token (the bot token). PNG/JPG only
-// in Phase 1.0 — PDFs are skipped per the brief, with an audit-log warning
-// emitted by the message handler when one is encountered.
+// Slack's `url_private` requires a Bearer token (the bot token). The download
+// itself is mime-agnostic; the helpers below classify a file as a supported
+// image (PNG/JPG) or a PDF (Phase 1.1+: page 1 is extracted and converted to
+// PNG by `src/llm/pdf.ts` so the classifier can use it as a vision input).
 
 const MAX_BYTES = 20 * 1024 * 1024; // 20MB — Slack's default file limit
 

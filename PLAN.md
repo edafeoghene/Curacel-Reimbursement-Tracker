@@ -257,7 +257,7 @@ Store `file.id` and `file.url_private` on the ticket row. The URL is permanent i
 
 - The full text of the source message.
 - All image attachments (PNG, JPG) as base64 image_url parts.
-- For PDFs: extract first page as image (use `pdf-poppler` or similar) and include as image_url. Document this as a known limitation — multi-page PDFs only send page 1 to the model.
+- For PDFs: extract page 1 to PNG via `pdf-to-png-converter` (wraps `pdfjs-dist` + `@napi-rs/canvas`; cross-platform pre-built native binaries — works locally on macOS Apple Silicon and on Railway Linux x64). Implementation lives in `src/llm/pdf.ts`. **Known limitation:** multi-page PDFs only contribute page 1 to the model. No per-ticket multi-page warning is emitted (the detection cost — a separate parse pass — isn't worth it for an audit string; revisit in Phase 2).
 
 ### Output schema (strict JSON)
 
@@ -574,7 +574,8 @@ Slash command `/expense-cancel <tracking_id>`. Only the requester or financial m
 | Message with no attachment AND no parseable amount | Ephemeral nudge to user, skip classification. |
 | Receipt amount ≠ message amount | Prefer receipt amount, flag in `notes` column for human review. |
 | Currency in message ≠ currency on receipt | Prefer receipt currency, flag. |
-| PDF receipt with multiple pages | Use page 1 only, log warning. Phase 2 can improve. |
+| PDF receipt (any page count) | Page 1 extracted to PNG via `src/llm/pdf.ts` and included as a vision input. Multi-page PDFs only contribute page 1; no per-ticket warning. Phase 2 can re-add multi-page rendering. |
+| PDF that fails extraction (encrypted, corrupted, or unsupported features) | Captured in `downloadFailures`, audit-logged as `RECEIPT_PARSED` warning. Classifier falls back to text-only. If text alone yields low confidence → MANUAL_REVIEW. |
 | Duplicate submission (same amount, vendor, date) | Log warning in audit_log; do NOT auto-merge. Financial manager decides. |
 | Concurrent button clicks on same ticket | Write queue serializes; second click sees updated row_version, gets ephemeral "already processed". |
 | Wrong-user clicks button after delegation | Authorization check fails, ephemeral rejection. |
