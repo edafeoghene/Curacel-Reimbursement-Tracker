@@ -16,17 +16,20 @@ import { v4 as uuidv4 } from "uuid";
 
 import type { Config } from "../config.js";
 import { appendApproval, listApprovalsForTicket, updateApprovalDecision } from "../sheets/approvals.js";
+import { getCachedRoutes } from "../sheets/routes.js";
 import { getTicketByTrackingId, listNonTerminalTickets, updateTicket } from "../sheets/tickets.js";
 import { transition } from "../state/machine.js";
 import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
 
 import { dmUser, postEphemeral, updateMessage } from "./messaging.js";
-import { PAYMENT_STEP_SENTINEL, safeAudit } from "./events.js";
+import { fetchUserName, PAYMENT_STEP_SENTINEL, safeAudit } from "./events.js";
 import {
   approverDmAfterApprove,
   approverDmAfterReject,
+  approverDmBlocks,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
+  manualReviewDmBlocks,
   MODAL_REJECT_CALLBACK_ID,
   REJECT_REASON_ACTION_ID,
   REJECT_REASON_BLOCK_ID,
@@ -108,8 +111,63 @@ function makeApproveHandler({ config }: Deps) {
       return;
     }
 
-    // Phase 1.0 single-step: this approval IS the final step.
-    const isFinal = true;
+    // Look up the route to compute is_final_step. Fail loudly to MANUAL_REVIEW
+    // if the ticket's route_id is no longer in the cache (route was deleted or
+    // renamed mid-flight). Per PLAN.md §14.
+    const route = getCachedRoutes().find((r) => r.route_id === ticket.route_id);
+    if (!route) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[interactivity] expense_approve: route ${ticket.route_id} not in cache; routing to MANUAL_REVIEW`,
+      );
+      try {
+        const updated = await updateTicket(trackingId, ticket.row_version, {
+          status: "MANUAL_REVIEW",
+        });
+        await safeAudit({
+          tracking_id: trackingId,
+          actor_user_id: "system",
+          event_type: AUDIT_EVENTS.STATE_TRANSITION,
+          details: {
+            event: "ROUTE_LOST",
+            from: ticket.status,
+            to: "MANUAL_REVIEW",
+            route_id: ticket.route_id,
+          },
+        });
+        const { blocks, fallbackText } = manualReviewDmBlocks(
+          updated,
+          `Route \`${ticket.route_id}\` is no longer in the routes sheet — cannot determine the approval chain.`,
+        );
+        await dmUser(
+          client,
+          config.FINANCIAL_MANAGER_USER_ID,
+          blocks,
+          fallbackText,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[interactivity] route-lost MANUAL_REVIEW handling failed:",
+          err,
+        );
+      }
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            "This ticket's route is no longer configured. The financial manager has been notified.",
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const isFinal = ticket.current_step === route.approvers.length;
 
     const result = transition(ticket, {
       type: "APPROVE",
@@ -144,9 +202,6 @@ function makeApproveHandler({ config }: Deps) {
         a.step_number === ticket.current_step && a.decision === "PENDING",
     );
 
-    const approverName = ticket.requester_name; // fallback only — not used as approver display
-    void approverName;
-
     const decidedAt = new Date();
     const decidedAtIso = decidedAt.toISOString();
 
@@ -163,15 +218,43 @@ function makeApproveHandler({ config }: Deps) {
       }
     }
 
-    // Update ticket status (single source of truth = state machine).
+    // Compute ticket patch. Non-final approve advances current_step and
+    // current_approver_user_id; final approve only flips status.
+    const advanceEffect = result.sideEffects.find(
+      (e) => e.type === "ADVANCE_TO_STEP",
+    );
+    let patch: Partial<Ticket> = { status: result.next };
+    let nextApproverId: string | null = null;
+    if (advanceEffect && advanceEffect.type === "ADVANCE_TO_STEP") {
+      const idx = advanceEffect.step_number - 1;
+      const candidate = route.approvers[idx];
+      if (!candidate) {
+        // Shouldn't happen — is_final_step computed off the same route — but
+        // guard so we don't write a corrupt ticket.
+        // eslint-disable-next-line no-console
+        console.error(
+          `[interactivity] ADVANCE_TO_STEP ${advanceEffect.step_number} has no approver in route ${route.route_id}`,
+        );
+        return;
+      }
+      nextApproverId = candidate;
+      patch = {
+        ...patch,
+        current_step: advanceEffect.step_number,
+        current_approver_user_id: candidate,
+      };
+    }
+
+    // Update ticket (single source of truth = state machine).
     let updatedTicket: Ticket;
     try {
-      updatedTicket = await updateTicket(trackingId, ticket.row_version, {
-        status: result.next,
-      });
+      updatedTicket = await updateTicket(trackingId, ticket.row_version, patch);
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("[interactivity] updateTicket(APPROVED) failed:", err);
+      console.error(
+        `[interactivity] updateTicket(${result.next}) failed:`,
+        err,
+      );
       return;
     }
 
@@ -190,14 +273,15 @@ function makeApproveHandler({ config }: Deps) {
         from: ticket.status,
         to: result.next,
         is_final_step: isFinal,
+        ...(nextApproverId
+          ? { advance_to_step: updatedTicket.current_step, next_approver: nextApproverId }
+          : {}),
       },
     });
 
     // Edit the approver DM to remove the button.
     if (channelId && messageTs) {
       try {
-        // Best-effort approver display name pulled from the approval row
-        // (already snapshotted at DM time).
         const name = pending?.approver_name ?? `<@${clickerId}>`;
         const { blocks, fallbackText } = approverDmAfterApprove(
           updatedTicket,
@@ -211,7 +295,53 @@ function makeApproveHandler({ config }: Deps) {
       }
     }
 
-    // Side effect: DM the financial manager with "Mark as Paid".
+    if (nextApproverId) {
+      // Non-final: DM the next approver and append a fresh approval row.
+      try {
+        const { blocks, fallbackText } = approverDmBlocks(updatedTicket);
+        const dm = await dmUser(client, nextApproverId, blocks, fallbackText);
+        const nextApproverName = await fetchUserName(client, nextApproverId);
+        await appendApproval({
+          approval_id: uuidv4(),
+          tracking_id: trackingId,
+          step_number: updatedTicket.current_step,
+          approver_user_id: nextApproverId,
+          approver_name: nextApproverName,
+          decision: "PENDING",
+          decided_at: null,
+          comment: "",
+          delegated_to_user_id: null,
+          dm_channel_id: dm.channel,
+          message_ts: dm.ts,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[interactivity] DM to next approver failed:",
+          err,
+        );
+        // The previous step is already recorded as APPROVED and the ticket's
+        // current_step has advanced — re-DMing is the financial manager's job
+        // via /expense-resume once that lands. For now, surface to FM.
+        try {
+          const { blocks, fallbackText } = manualReviewDmBlocks(
+            updatedTicket,
+            `Failed to DM next approver <@${nextApproverId}> at step ${updatedTicket.current_step}: ${(err as Error).message}`,
+          );
+          await dmUser(
+            client,
+            config.FINANCIAL_MANAGER_USER_ID,
+            blocks,
+            fallbackText,
+          );
+        } catch {
+          // ignore — already logged
+        }
+      }
+      return;
+    }
+
+    // Final approve: DM the financial manager with "Mark as Paid".
     try {
       const { blocks, fallbackText } = financialManagerDmBlocks(updatedTicket);
       const { channel: fmChannel, ts: fmTs } = await dmUser(

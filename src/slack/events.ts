@@ -116,7 +116,7 @@ export function __seedPendingNudgeForTests(n: PendingNudge): void {
   pendingNudges.set(n.source_message_ts, n);
 }
 
-async function fetchUserName(
+export async function fetchUserName(
   client: WebClient,
   userId: string,
 ): Promise<string> {

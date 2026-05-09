@@ -59,20 +59,13 @@ export function transition(
       if (event.is_final_step) {
         return ok("APPROVED", [{ type: "DM_FINANCIAL_MANAGER_FOR_PAYMENT" }]);
       }
-      // More steps remain — stay AWAITING_APPROVAL but emit DM for next step.
-      // Caller is responsible for resolving who the next approver is and
-      // updating ticket.current_step / current_approver_user_id in the sheet.
-      // The state machine reports the *next* step as current+1.
+      // More steps remain — stay AWAITING_APPROVAL and tell the caller which
+      // step to advance to. Caller resolves the new approver from the route
+      // (it already loaded the route to compute is_final_step) and updates
+      // ticket.current_step / current_approver_user_id in the sheet.
       const nextStep = ticket.current_step + 1;
       return ok("AWAITING_APPROVAL", [
-        {
-          type: "DM_NEXT_APPROVER",
-          // approver_user_id is filled in by the caller from the route chain;
-          // the state machine cannot know it. We pass empty string so the type
-          // shape is honored — see SideEffect type. Callers MUST overwrite.
-          approver_user_id: "",
-          step_number: nextStep,
-        },
+        { type: "ADVANCE_TO_STEP", step_number: nextStep },
       ]);
     }
 
@@ -110,14 +103,8 @@ export function transition(
       if (status !== "NEEDS_CLARIFICATION") {
         return illegal(status, event.type);
       }
-      return ok("AWAITING_APPROVAL", [
-        {
-          type: "DM_NEXT_APPROVER",
-          // Re-DM the same approver at the same step.
-          approver_user_id: ticket.current_approver_user_id,
-          step_number: ticket.current_step,
-        },
-      ]);
+      // Caller re-DMs ticket.current_approver_user_id at ticket.current_step.
+      return ok("AWAITING_APPROVAL", [{ type: "RE_DM_CURRENT_APPROVER" }]);
     }
 
     case "MARK_AS_PAID": {

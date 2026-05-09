@@ -108,7 +108,7 @@ describe("transition: FIRST_DM_SENT", () => {
 });
 
 describe("transition: APPROVE", () => {
-  it("non-final step stays AWAITING_APPROVAL with DM_NEXT_APPROVER", () => {
+  it("non-final step stays AWAITING_APPROVAL with ADVANCE_TO_STEP", () => {
     const t = makeTicket({ status: "AWAITING_APPROVAL", current_step: 1 });
     const r = transition(t, {
       type: "APPROVE",
@@ -119,12 +119,24 @@ describe("transition: APPROVE", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.next).toBe("AWAITING_APPROVAL");
-    expect(r.sideEffects).toHaveLength(1);
-    const effect = r.sideEffects[0];
-    expect(effect?.type).toBe("DM_NEXT_APPROVER");
-    if (effect?.type === "DM_NEXT_APPROVER") {
-      expect(effect.step_number).toBe(2);
-    }
+    expect(r.sideEffects).toEqual([
+      { type: "ADVANCE_TO_STEP", step_number: 2 },
+    ]);
+  });
+
+  it("non-final step on step 2 advances to step 3", () => {
+    const t = makeTicket({ status: "AWAITING_APPROVAL", current_step: 2 });
+    const r = transition(t, {
+      type: "APPROVE",
+      step: 2,
+      approver_user_id: "U_TINUS",
+      is_final_step: false,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.sideEffects).toEqual([
+      { type: "ADVANCE_TO_STEP", step_number: 3 },
+    ]);
   });
 
   it("final step transitions to APPROVED with DM_FINANCIAL_MANAGER_FOR_PAYMENT", () => {
@@ -268,13 +280,7 @@ describe("transition: RESUME_AFTER_CLARIFY", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.next).toBe("AWAITING_APPROVAL");
-    expect(r.sideEffects).toEqual([
-      {
-        type: "DM_NEXT_APPROVER",
-        approver_user_id: "U_PATRICK",
-        step_number: 2,
-      },
-    ]);
+    expect(r.sideEffects).toEqual([{ type: "RE_DM_CURRENT_APPROVER" }]);
   });
 
   it("rejects RESUME_AFTER_CLARIFY outside NEEDS_CLARIFICATION", () => {

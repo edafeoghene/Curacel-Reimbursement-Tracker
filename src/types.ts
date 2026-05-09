@@ -113,7 +113,13 @@ export type StateEvent =
   | { type: "CANCEL"; actor_user_id: string };
 
 export type SideEffect =
-  | { type: "DM_NEXT_APPROVER"; approver_user_id: string; step_number: number }
+  // Non-final APPROVE: advance the chain. Caller resolves the next approver
+  // from the route (which it already loaded to compute is_final_step) and
+  // updates ticket.current_step / current_approver_user_id accordingly.
+  | { type: "ADVANCE_TO_STEP"; step_number: number }
+  // RESUME_AFTER_CLARIFY: re-DM the same approver at the same step. Caller
+  // reads ticket.current_step / current_approver_user_id directly.
+  | { type: "RE_DM_CURRENT_APPROVER" }
   | { type: "DM_FINANCIAL_MANAGER_FOR_PAYMENT" }
   | { type: "DM_FINANCIAL_MANAGER_MANUAL_REVIEW"; reason: string }
   | { type: "DM_FINANCIAL_MANAGER_CLARIFICATION"; requester_user_id: string }
