@@ -1,13 +1,7 @@
 // Slash commands.
 //
-// Phase 1.2: `/expense-resume <tracking_id>` — financial-manager-only
-// command that resumes an approval after clarification. Re-DMs the same
-// approver at the same step (fresh DM + fresh PENDING approval row;
-// the original CLARIFICATION_REQUESTED row stays in place as the audit
-// trail).
-//
-// TODO Phase 1.6: register `/expense-cancel` (cancellation by requester
-// or financial manager).
+// Phase 1.2: `/expense-resume <tracking_id>` — financial-manager-only.
+// Phase 1.6: `/expense-cancel <tracking_id>` — requester or FM.
 
 import type { App } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
@@ -15,14 +9,17 @@ import { v4 as uuidv4 } from "uuid";
 
 import type { Config } from "../config.js";
 import { isValidTrackingId } from "../id.js";
-import { appendApproval } from "../sheets/approvals.js";
+import {
+  appendApproval,
+  listApprovalsForTicket,
+} from "../sheets/approvals.js";
 import { getTicketByTrackingId, updateTicket } from "../sheets/tickets.js";
 import { transition } from "../state/machine.js";
-import { AUDIT_EVENTS, type Ticket } from "../types.js";
+import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
 
 import { fetchUserName, safeAudit } from "./events.js";
-import { dmUser } from "./messaging.js";
-import { approverDmBlocks } from "./views.js";
+import { dmUser, updateMessage } from "./messaging.js";
+import { approverDmBlocks, dmAfterCancel } from "./views.js";
 
 interface Deps {
   config: Config;
@@ -34,7 +31,7 @@ interface Deps {
  * `code` blocks pasted into the command box). Returns the validated id, or
  * null if it doesn't match the canonical EXP-YYMM-XXXX shape.
  */
-export function parseResumeArg(text: string): string | null {
+export function parseTrackingIdArg(text: string): string | null {
   if (!text) return null;
   const stripped = text.trim().replace(/^`+|`+$/g, "");
   if (!stripped) return null;
@@ -44,6 +41,9 @@ export function parseResumeArg(text: string): string | null {
   const first = stripped.split(/\s+/)[0] ?? "";
   return isValidTrackingId(first) ? first : null;
 }
+
+/** @deprecated Phase 1.2 alias — prefer parseTrackingIdArg. */
+export const parseResumeArg = parseTrackingIdArg;
 
 function makeExpenseResumeHandler({ config }: Deps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -59,7 +59,7 @@ function makeExpenseResumeHandler({ config }: Deps) {
     const userId = command.user_id ?? "";
     const text = command.text ?? "";
 
-    const trackingId = parseResumeArg(text);
+    const trackingId = parseTrackingIdArg(text);
     if (!trackingId) {
       await respond({
         response_type: "ephemeral",
@@ -201,7 +201,179 @@ function makeExpenseResumeHandler({ config }: Deps) {
   };
 }
 
+// ---------- /expense-cancel (Phase 1.6) ----------
+
+/**
+ * Cancel an in-flight ticket. Authorized for the requester (whoever logged
+ * the expense) or the financial manager. Runs CANCEL through the state
+ * machine, edits any open PENDING approval-row DMs and the FM Mark-as-Paid
+ * sentinel DM to "Cancelled", and posts in the source thread.
+ *
+ * The state machine refuses CANCEL when the ticket is already terminal
+ * (PAID/REJECTED/CANCELLED), so a double-click is a no-op for the user.
+ */
+function makeExpenseCancelHandler({ config }: Deps) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (args: any): Promise<void> => {
+    await args.ack();
+
+    const command = args.command as { text?: string; user_id?: string };
+    const client: WebClient = args.client;
+    const respond = args.respond as (msg: {
+      response_type?: "ephemeral" | "in_channel";
+      text: string;
+    }) => Promise<unknown>;
+    const userId = command.user_id ?? "";
+    const text = command.text ?? "";
+
+    const trackingId = parseTrackingIdArg(text);
+    if (!trackingId) {
+      await respond({
+        response_type: "ephemeral",
+        text: "Usage: `/expense-cancel EXP-YYMM-XXXX`",
+      });
+      return;
+    }
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      await respond({
+        response_type: "ephemeral",
+        text: `Ticket \`${trackingId}\` not found.`,
+      });
+      return;
+    }
+
+    const isRequester = userId === ticket.requester_user_id;
+    const isFm = userId === config.FINANCIAL_MANAGER_USER_ID;
+    if (!isRequester && !isFm) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: userId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_cancel",
+          allowed: ["requester", "financial_manager"],
+          got: userId,
+        },
+      });
+      await respond({
+        response_type: "ephemeral",
+        text: "Only the requester or the financial manager can cancel an expense.",
+      });
+      return;
+    }
+
+    const result = transition(ticket, {
+      type: "CANCEL",
+      actor_user_id: userId,
+    });
+    if (!result.ok) {
+      await respond({
+        response_type: "ephemeral",
+        text: `Cannot cancel \`${trackingId}\`: ${result.error}`,
+      });
+      return;
+    }
+
+    let updatedTicket: Ticket;
+    try {
+      updatedTicket = await updateTicket(trackingId, ticket.row_version, {
+        status: result.next,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[slash] updateTicket(CANCELLED) failed:", err);
+      await respond({
+        response_type: "ephemeral",
+        text: `Could not update ticket \`${trackingId}\`. See server logs.`,
+      });
+      return;
+    }
+
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: userId,
+      event_type: AUDIT_EVENTS.CANCELLED,
+      details: {
+        cancelled_by_role: isRequester ? "requester" : "financial_manager",
+        from_status: ticket.status,
+      },
+    });
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: userId,
+      event_type: AUDIT_EVENTS.STATE_TRANSITION,
+      details: {
+        event: "CANCEL",
+        from: ticket.status,
+        to: result.next,
+      },
+    });
+
+    // Edit every open PENDING approval-row DM to "Cancelled" — that
+    // includes any in-flight approver DM and the FM Mark-as-Paid
+    // sentinel row if it exists. Errors are non-fatal.
+    const cancelledAt = new Date();
+    let approvals: Approval[] = [];
+    try {
+      approvals = await listApprovalsForTicket(trackingId);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[slash] listApprovalsForTicket(cancel) failed:",
+        err,
+      );
+    }
+    // Includes the FM Mark-as-Paid sentinel row when it's still PENDING.
+    const pending = approvals.filter(
+      (a) => a.decision === "PENDING" && a.dm_channel_id && a.message_ts,
+    );
+    const { blocks, fallbackText } = dmAfterCancel(
+      updatedTicket,
+      cancelledAt,
+      userId,
+    );
+    for (const a of pending) {
+      try {
+        await updateMessage(
+          client,
+          a.dm_channel_id,
+          a.message_ts,
+          blocks,
+          fallbackText,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[slash] cancel DM update failed for approval ${a.approval_id}:`,
+          err,
+        );
+      }
+    }
+
+    // POST_CANCELLATION_TO_THREAD side effect — post in the source thread.
+    try {
+      await client.chat.postMessage({
+        channel: updatedTicket.source_channel_id,
+        thread_ts: updatedTicket.source_message_ts,
+        text: `Expense \`${updatedTicket.tracking_id}\` was cancelled by <@${userId}>.`,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[slash] thread notify (cancel) failed:", err);
+    }
+
+    await respond({
+      response_type: "ephemeral",
+      text: `Cancelled \`${trackingId}\`.`,
+    });
+  };
+}
+
 export function registerSlashCommands(app: App, deps: Deps): void {
   const resumeHandler = makeExpenseResumeHandler(deps);
+  const cancelHandler = makeExpenseCancelHandler(deps);
   app.command("/expense-resume", resumeHandler);
+  app.command("/expense-cancel", cancelHandler);
 }

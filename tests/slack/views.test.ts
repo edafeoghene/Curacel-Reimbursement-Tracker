@@ -10,6 +10,7 @@ import {
   approverDmAfterDelegate,
   approverDmAfterReject,
   approverDmBlocks,
+  dmAfterCancel,
   CLARIFY_QUESTION_ACTION_ID,
   CLARIFY_QUESTION_BLOCK_ID,
   clarificationQuestionModal,
@@ -429,6 +430,30 @@ describe("approverDmAfterDelegate", () => {
     expect(ctx).toBeDefined();
     expect(ctx!.elements[0]!.text).toContain("<@U_PATRICK>");
     expect(ctx!.elements[0]!.text).toContain("Stephan");
+  });
+});
+
+describe("dmAfterCancel", () => {
+  it("drops actions and shows a cancelled context line tagging the canceller", () => {
+    const t = makeTicket();
+    const { blocks, fallbackText } = dmAfterCancel(
+      t,
+      new Date("2026-05-09T14:32:00Z"),
+      "U_REQUESTER",
+    );
+    expect(findActionsBlock(blocks)).toBeUndefined();
+    expect(fallbackText).toMatch(/Cancelled/);
+    const ctx = blocks
+      .filter((b) => b.type === "context")
+      .find((c) => {
+        const els =
+          (c as { elements: Array<{ text?: string }> }).elements ?? [];
+        return els.some(
+          (e) => typeof e.text === "string" && /Cancelled/.test(e.text),
+        );
+      }) as { elements: Array<{ text: string }> } | undefined;
+    expect(ctx).toBeDefined();
+    expect(ctx!.elements[0]!.text).toContain("<@U_REQUESTER>");
   });
 });
 

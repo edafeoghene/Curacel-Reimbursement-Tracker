@@ -314,6 +314,41 @@ export function approverDmAfterReject(
   return { blocks, fallbackText };
 }
 
+// ---------- DM: after cancel (Phase 1.6) ----------
+
+/**
+ * Generic "this ticket was cancelled" view used to replace any open
+ * pending DM — approver DMs at any step, the FM Mark-as-Paid DM, etc.
+ * Drops all buttons and surfaces who cancelled when.
+ */
+export function dmAfterCancel(
+  ticket: Ticket,
+  cancelledAt: Date,
+  cancelledByUserId: string,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("Expense cancelled"),
+    summaryFields(ticket),
+    descriptionBlock(ticket),
+  ];
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  blocks.push(divider());
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `:no_entry: Cancelled · ${hhmm(cancelledAt)} · by <@${cancelledByUserId}>`,
+      },
+    ],
+  });
+
+  const fallbackText = `Cancelled: ${ticket.tracking_id}`;
+  return { blocks, fallbackText };
+}
+
 // ---------- approver DM: after clarify (Phase 1.2) ----------
 
 export function approverDmAfterClarify(
