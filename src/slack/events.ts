@@ -363,6 +363,54 @@ async function generateUniqueTrackingId(): Promise<string | null> {
   return null;
 }
 
+// Result of processing a single classified item. Multi-expense splitting
+// (Phase 1.4): one classifier call can produce several tickets; the thread
+// ack summarizes all of them at the end.
+export type ItemOutcome =
+  | { kind: "ok"; trackingId: string; approverId: string; routeId: string; item: ClassifierItem }
+  | { kind: "manual"; trackingId: string | null; reason: string; item: ClassifierItem };
+
+/**
+ * Compose the single thread-ack message after all items in a multi-expense
+ * submission are processed. Single-item case stays terse so it reads the
+ * same as before. Multi-item case bullets each ticket with its summary +
+ * destination (approver, manual review, or failed-to-allocate).
+ */
+export function formatMultiItemAck(outcomes: ItemOutcome[]): string {
+  if (outcomes.length === 1) {
+    const o = outcomes[0]!;
+    if (o.kind === "ok") {
+      return `Logged as \`${o.trackingId}\`. Routing to <@${o.approverId}> for approval.`;
+    }
+    if (o.trackingId) {
+      return `Logged \`${o.trackingId}\` for manual review (${o.reason}).`;
+    }
+    return `Could not log this expense (${o.reason}).`;
+  }
+  const lines: string[] = [];
+  lines.push(`Logged ${outcomes.length} expenses from this message:`);
+  for (const o of outcomes) {
+    const summary = `${o.item.currency} ${formatAmount(o.item.amount)} · ${o.item.category}`;
+    if (o.kind === "ok") {
+      lines.push(`• \`${o.trackingId}\` — ${summary} → <@${o.approverId}>`);
+    } else if (o.trackingId) {
+      lines.push(
+        `• \`${o.trackingId}\` — ${summary} → manual review (${o.reason})`,
+      );
+    } else {
+      lines.push(`• ${summary} → could not log (${o.reason})`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatAmount(amount: number): string {
+  return amount.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
 interface HandlerDeps {
   config: Config;
 }
@@ -528,299 +576,391 @@ export function makeMessageHandler(deps: HandlerDeps) {
       return;
     }
 
-    // Phase 1.0: take items[0]; warn in audit if there were more.
-    const item = classifier.items[0]!;
-    const droppedItems = classifier.items.slice(1);
-
-    // Confidence gate → manual review (still uses state machine via stub flow).
-    if (classifier.confidence < 0.7) {
-      await routeToManualReview({
-        client,
-        config,
-        sourceTs,
-        channelId: config.EXPENSES_CHANNEL_ID,
-        userId,
-        text,
-        primary,
-        reason: `Classifier confidence ${classifier.confidence.toFixed(2)} below 0.7`,
-        classifierItem: item,
-        confidence: classifier.confidence,
-      });
-      return;
-    }
-
-    // ---- Resolve route ----
-    let routes;
-    try {
-      routes = getCachedRoutes();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[events] routes cache not loaded:", err);
-      await routeToManualReview({
-        client,
-        config,
-        sourceTs,
-        channelId: config.EXPENSES_CHANNEL_ID,
-        userId,
-        text,
-        primary,
-        reason: "Routes cache not loaded",
-        classifierItem: item,
-        confidence: classifier.confidence,
-      });
-      return;
-    }
-
-    const route = resolveRoute(routes, item.amount, item.currency, item.category);
-    if (!route) {
-      await routeToManualReview({
-        client,
-        config,
-        sourceTs,
-        channelId: config.EXPENSES_CHANNEL_ID,
-        userId,
-        text,
-        primary,
-        reason: `No matching route for ${item.currency} ${item.amount} (${item.category})`,
-        classifierItem: item,
-        confidence: classifier.confidence,
-      });
-      return;
-    }
-
-    // Phase 1.0 single-step routing — first approver only.
-    const approverId = route.approvers[0];
-    if (!approverId) {
-      await routeToManualReview({
-        client,
-        config,
-        sourceTs,
-        channelId: config.EXPENSES_CHANNEL_ID,
-        userId,
-        text,
-        primary,
-        reason: `Route ${route.route_id} has no approvers`,
-        classifierItem: item,
-        confidence: classifier.confidence,
-      });
-      return;
-    }
-
-    // ---- Allocate tracking ID ----
-    const trackingId = await generateUniqueTrackingId();
-    if (!trackingId) {
-      await routeToManualReview({
-        client,
-        config,
-        sourceTs,
-        channelId: config.EXPENSES_CHANNEL_ID,
-        userId,
-        text,
-        primary,
-        reason: "Failed to allocate unique tracking ID after 3 attempts",
-        classifierItem: item,
-        confidence: classifier.confidence,
-      });
-      return;
-    }
-
-    // ---- Build & write ticket row ----
+    // ---- Per-item loop (Phase 1.4: multi-expense splitting) ----
+    // Each item becomes its own ticket with its own tracking_id, route
+    // resolution, approval row, and DM. Confidence is per-classification
+    // (single LLM call), so a low confidence routes ALL items to manual
+    // review uniformly.
     const requesterName = await fetchUserName(client, userId);
-    const nowIso = new Date().toISOString();
+    const outcomes: ItemOutcome[] = [];
+    const allTrackingIds: string[] = [];
 
-    const ticket: Ticket = {
-      tracking_id: trackingId,
-      created_at: nowIso,
-      source_message_ts: sourceTs,
-      source_channel_id: config.EXPENSES_CHANNEL_ID,
-      requester_user_id: userId,
-      requester_name: requesterName,
-      description: item.description,
-      category: item.category,
-      amount: item.amount,
-      currency: item.currency,
-      receipt_file_id: primary?.id ?? "",
-      receipt_file_url: primary?.url_private ?? "",
-      status: "SUBMITTED",
-      route_id: route.route_id,
-      current_step: 1,
-      current_approver_user_id: approverId,
-      payment_confirmation_file_id: null,
-      updated_at: nowIso,
-      row_version: 1,
-    };
-
-    try {
-      await appendTicket(ticket);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[events] appendTicket failed:", err);
-      // Can't even log a manual-review ticket because the sheet isn't writable.
-      return;
-    }
-
-    await safeAudit({
-      tracking_id: trackingId,
-      actor_user_id: userId,
-      event_type: AUDIT_EVENTS.TICKET_CREATED,
-      details: {
-        route_id: route.route_id,
-        amount: item.amount,
-        currency: item.currency,
-        category: item.category,
-        confidence: classifier.confidence,
-      },
-    });
-
-    // Audit the LLM classification result.
-    await safeAudit({
-      tracking_id: trackingId,
-      actor_user_id: "system",
-      event_type: AUDIT_EVENTS.LLM_CLASSIFIED,
-      details: {
-        confidence: classifier.confidence,
-        items_count: classifier.items.length,
-        notes: classifier.notes,
-        primary_item: item,
-        dropped_items: droppedItems.length > 0 ? droppedItems : undefined,
-      },
-    });
-
-    if (downloadFailures.length > 0) {
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: "system",
-        event_type: AUDIT_EVENTS.RECEIPT_PARSED,
-        details: {
-          warning: "image acquisition failure(s) — classifier ran with available inputs",
-          failures: downloadFailures,
-        },
+    for (let itemIdx = 0; itemIdx < classifier.items.length; itemIdx++) {
+      const item = classifier.items[itemIdx]!;
+      const outcome = await processOneItem({
+        client,
+        config,
+        sourceTs,
+        userId,
+        requesterName,
+        text,
+        primary,
+        item,
+        classifier,
+        downloadFailures,
+        itemIdx,
+        // siblings filled in once the loop's done so each item knows the
+        // others. We patch outcomes[i].sibling refs after the loop.
       });
-    }
-    if (droppedItems.length > 0) {
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: "system",
-        event_type: AUDIT_EVENTS.RECEIPT_PARSED,
-        details: {
-          warning: `Classifier returned ${classifier.items.length} items; Phase 1.0 took items[0] only.`,
-          dropped_items: droppedItems,
-        },
-      });
+      outcomes.push(outcome);
+      if (outcome.trackingId) allTrackingIds.push(outcome.trackingId);
     }
 
-    // ---- State machine: CLASSIFIED ----
-    const classifiedResult = transition(ticket, {
-      type: "CLASSIFIED",
-      confidence: classifier.confidence,
-    });
-    if (classifiedResult.ok) {
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: "system",
-        event_type: AUDIT_EVENTS.STATE_TRANSITION,
-        details: {
-          event: "CLASSIFIED",
-          from: "SUBMITTED",
-          to: classifiedResult.next,
-        },
-      });
+    // Cross-link siblings in the audit trail so each ticket can be traced
+    // back to the original multi-item submission.
+    if (allTrackingIds.length > 1) {
+      for (const tid of allTrackingIds) {
+        await safeAudit({
+          tracking_id: tid,
+          actor_user_id: "system",
+          event_type: AUDIT_EVENTS.LLM_CLASSIFIED,
+          details: {
+            siblings: allTrackingIds.filter((s) => s !== tid),
+            total_items: classifier.items.length,
+          },
+        });
+      }
     }
 
-    // ---- Thread ack ----
+    // ---- Single thread ack summarising every item ----
+    if (outcomes.length === 0) return;
     try {
       await ackInThread(
         client,
         config.EXPENSES_CHANNEL_ID,
         sourceTs,
-        `Logged as \`${trackingId}\`. Routing to <@${approverId}> for approval.`,
+        formatMultiItemAck(outcomes),
       );
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn("[events] thread ack failed:", err);
-      // Continue — ack is nice-to-have, the DM is the load-bearing notification.
+      // Continue — ack is nice-to-have, the DMs are the load-bearing
+      // notifications.
     }
+  };
+}
 
-    // ---- DM the approver ----
-    let dm: { channel: string; ts: string };
-    try {
-      const { blocks, fallbackText } = approverDmBlocks(ticket);
-      dm = await dmUser(client, approverId, blocks, fallbackText);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[events] approver DM failed:", err);
-      // Roll the ticket into MANUAL_REVIEW; financial manager handles.
-      try {
-        const updated = await updateTicket(trackingId, ticket.row_version, {
-          status: "MANUAL_REVIEW",
-        });
-        await safeAudit({
-          tracking_id: trackingId,
-          actor_user_id: "system",
-          event_type: AUDIT_EVENTS.STATE_TRANSITION,
-          details: {
-            event: "DM_FAILED",
-            from: "SUBMITTED",
-            to: "MANUAL_REVIEW",
-            error: (err as Error).message,
-          },
-        });
-        try {
-          const { blocks, fallbackText } = manualReviewDmBlocks(
-            updated,
-            `Failed to DM approver <@${approverId}>: ${(err as Error).message}`,
-          );
-          await dmUser(client, config.FINANCIAL_MANAGER_USER_ID, blocks, fallbackText);
-        } catch (dmErr) {
-          // eslint-disable-next-line no-console
-          console.error("[events] manual-review DM failed:", dmErr);
-        }
-      } catch (upErr) {
-        // eslint-disable-next-line no-console
-        console.error("[events] failed to roll ticket to MANUAL_REVIEW:", upErr);
-      }
-      return;
-    }
+interface ProcessOneItemArgs {
+  client: WebClient;
+  config: Config;
+  sourceTs: string;
+  userId: string;
+  requesterName: string;
+  text: string;
+  primary: SlackFilePartial | null;
+  item: ClassifierItem;
+  classifier: ClassifierResult;
+  downloadFailures: string[];
+  itemIdx: number;
+}
 
-    // ---- Append approval row ----
-    const approverName = await fetchUserName(client, approverId);
+/**
+ * Process a single classified item: resolve its route, allocate a tracking
+ * id, write the ticket row, audit, DM the approver, append the approval
+ * row, run CLASSIFIED + FIRST_DM_SENT through the state machine. On any
+ * recoverable failure (no route, DM failure, etc.) the item gets a
+ * MANUAL_REVIEW ticket so the financial manager has visibility.
+ */
+async function processOneItem(
+  args: ProcessOneItemArgs,
+): Promise<ItemOutcome> {
+  const {
+    client,
+    config,
+    sourceTs,
+    userId,
+    requesterName,
+    text,
+    primary,
+    item,
+    classifier,
+    downloadFailures,
+    itemIdx,
+  } = args;
+
+  // Confidence gate (per-classification, applied per-item so each item gets
+  // its own MANUAL_REVIEW ticket when the classifier wasn't sure).
+  if (classifier.confidence < 0.7) {
+    const reason = `Classifier confidence ${classifier.confidence.toFixed(2)} below 0.7`;
+    const id = await routeToManualReview({
+      client,
+      config,
+      sourceTs,
+      channelId: config.EXPENSES_CHANNEL_ID,
+      userId,
+      text,
+      primary,
+      reason,
+      classifierItem: item,
+      confidence: classifier.confidence,
+    });
+    return { kind: "manual", trackingId: id, reason, item };
+  }
+
+  // Resolve route.
+  let routes;
+  try {
+    routes = getCachedRoutes();
+  } catch {
+    const reason = "Routes cache not loaded";
+    const id = await routeToManualReview({
+      client,
+      config,
+      sourceTs,
+      channelId: config.EXPENSES_CHANNEL_ID,
+      userId,
+      text,
+      primary,
+      reason,
+      classifierItem: item,
+      confidence: classifier.confidence,
+    });
+    return { kind: "manual", trackingId: id, reason, item };
+  }
+
+  const route = resolveRoute(routes, item.amount, item.currency, item.category);
+  if (!route) {
+    const reason = `No matching route for ${item.currency} ${item.amount} (${item.category})`;
+    const id = await routeToManualReview({
+      client,
+      config,
+      sourceTs,
+      channelId: config.EXPENSES_CHANNEL_ID,
+      userId,
+      text,
+      primary,
+      reason,
+      classifierItem: item,
+      confidence: classifier.confidence,
+    });
+    return { kind: "manual", trackingId: id, reason, item };
+  }
+
+  // First approver of the chain — multi-step routing (Phase 1.5) handles
+  // the rest of the chain after each Approve.
+  const approverId = route.approvers[0];
+  if (!approverId) {
+    const reason = `Route ${route.route_id} has no approvers`;
+    const id = await routeToManualReview({
+      client,
+      config,
+      sourceTs,
+      channelId: config.EXPENSES_CHANNEL_ID,
+      userId,
+      text,
+      primary,
+      reason,
+      classifierItem: item,
+      confidence: classifier.confidence,
+    });
+    return { kind: "manual", trackingId: id, reason, item };
+  }
+
+  const trackingId = await generateUniqueTrackingId();
+  if (!trackingId) {
+    const reason = "Failed to allocate unique tracking ID after 3 attempts";
+    const id = await routeToManualReview({
+      client,
+      config,
+      sourceTs,
+      channelId: config.EXPENSES_CHANNEL_ID,
+      userId,
+      text,
+      primary,
+      reason,
+      classifierItem: item,
+      confidence: classifier.confidence,
+    });
+    return { kind: "manual", trackingId: id, reason, item };
+  }
+
+  const nowIso = new Date().toISOString();
+  const ticket: Ticket = {
+    tracking_id: trackingId,
+    created_at: nowIso,
+    source_message_ts: sourceTs,
+    source_channel_id: config.EXPENSES_CHANNEL_ID,
+    requester_user_id: userId,
+    requester_name: requesterName,
+    description: item.description,
+    category: item.category,
+    amount: item.amount,
+    currency: item.currency,
+    receipt_file_id: primary?.id ?? "",
+    receipt_file_url: primary?.url_private ?? "",
+    status: "SUBMITTED",
+    route_id: route.route_id,
+    current_step: 1,
+    current_approver_user_id: approverId,
+    payment_confirmation_file_id: null,
+    updated_at: nowIso,
+    row_version: 1,
+  };
+
+  try {
+    await appendTicket(ticket);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[events] appendTicket failed:", err);
+    // The sheet isn't writable; we can't even record this for manual review.
+    return {
+      kind: "manual",
+      trackingId: null,
+      reason: "Sheet not writable",
+      item,
+    };
+  }
+
+  await safeAudit({
+    tracking_id: trackingId,
+    actor_user_id: userId,
+    event_type: AUDIT_EVENTS.TICKET_CREATED,
+    details: {
+      route_id: route.route_id,
+      amount: item.amount,
+      currency: item.currency,
+      category: item.category,
+      confidence: classifier.confidence,
+      item_index: itemIdx,
+      total_items: classifier.items.length,
+    },
+  });
+
+  await safeAudit({
+    tracking_id: trackingId,
+    actor_user_id: "system",
+    event_type: AUDIT_EVENTS.LLM_CLASSIFIED,
+    details: {
+      confidence: classifier.confidence,
+      items_count: classifier.items.length,
+      notes: classifier.notes,
+      item,
+      item_index: itemIdx,
+    },
+  });
+
+  if (downloadFailures.length > 0) {
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: "system",
+      event_type: AUDIT_EVENTS.RECEIPT_PARSED,
+      details: {
+        warning:
+          "image acquisition failure(s) — classifier ran with available inputs",
+        failures: downloadFailures,
+      },
+    });
+  }
+
+  // CLASSIFIED transition.
+  const classifiedResult = transition(ticket, {
+    type: "CLASSIFIED",
+    confidence: classifier.confidence,
+  });
+  if (classifiedResult.ok) {
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: "system",
+      event_type: AUDIT_EVENTS.STATE_TRANSITION,
+      details: {
+        event: "CLASSIFIED",
+        from: "SUBMITTED",
+        to: classifiedResult.next,
+      },
+    });
+  }
+
+  // DM the approver.
+  let dm: { channel: string; ts: string };
+  try {
+    const { blocks, fallbackText } = approverDmBlocks(ticket);
+    dm = await dmUser(client, approverId, blocks, fallbackText);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[events] approver DM failed:", err);
     try {
-      await appendApproval({
-        approval_id: uuidv4(),
-        tracking_id: trackingId,
-        step_number: 1,
-        approver_user_id: approverId,
-        approver_name: approverName,
-        decision: "PENDING",
-        decided_at: null,
-        comment: "",
-        delegated_to_user_id: null,
-        dm_channel_id: dm.channel,
-        message_ts: dm.ts,
+      const updated = await updateTicket(trackingId, ticket.row_version, {
+        status: "MANUAL_REVIEW",
       });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[events] appendApproval failed:", err);
-      // The DM was sent but we can't track it. Manual review.
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: "system",
+        event_type: AUDIT_EVENTS.STATE_TRANSITION,
+        details: {
+          event: "DM_FAILED",
+          from: "SUBMITTED",
+          to: "MANUAL_REVIEW",
+          error: (err as Error).message,
+        },
+      });
       try {
-        await updateTicket(trackingId, ticket.row_version, {
-          status: "MANUAL_REVIEW",
-        });
-      } catch (upErr) {
+        const { blocks, fallbackText } = manualReviewDmBlocks(
+          updated,
+          `Failed to DM approver <@${approverId}>: ${(err as Error).message}`,
+        );
+        await dmUser(
+          client,
+          config.FINANCIAL_MANAGER_USER_ID,
+          blocks,
+          fallbackText,
+        );
+      } catch (dmErr) {
         // eslint-disable-next-line no-console
-        console.error("[events] rollback to MANUAL_REVIEW failed:", upErr);
+        console.error("[events] manual-review DM failed:", dmErr);
       }
-      return;
-    }
-
-    // ---- State machine: FIRST_DM_SENT → AWAITING_APPROVAL ----
-    const firstDmResult = transition(ticket, { type: "FIRST_DM_SENT" });
-    if (!firstDmResult.ok) {
+    } catch (upErr) {
       // eslint-disable-next-line no-console
-      console.error("[events] FIRST_DM_SENT illegal:", firstDmResult.error);
-      return;
+      console.error(
+        "[events] failed to roll ticket to MANUAL_REVIEW:",
+        upErr,
+      );
     }
+    return {
+      kind: "manual",
+      trackingId,
+      reason: `DM to <@${approverId}> failed`,
+      item,
+    };
+  }
 
+  // Append the approval row.
+  const approverName = await fetchUserName(client, approverId);
+  try {
+    await appendApproval({
+      approval_id: uuidv4(),
+      tracking_id: trackingId,
+      step_number: 1,
+      approver_user_id: approverId,
+      approver_name: approverName,
+      decision: "PENDING",
+      decided_at: null,
+      comment: "",
+      delegated_to_user_id: null,
+      dm_channel_id: dm.channel,
+      message_ts: dm.ts,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[events] appendApproval failed:", err);
+    try {
+      await updateTicket(trackingId, ticket.row_version, {
+        status: "MANUAL_REVIEW",
+      });
+    } catch (upErr) {
+      // eslint-disable-next-line no-console
+      console.error("[events] rollback to MANUAL_REVIEW failed:", upErr);
+    }
+    return {
+      kind: "manual",
+      trackingId,
+      reason: "Could not append approval row",
+      item,
+    };
+  }
+
+  // FIRST_DM_SENT transition.
+  const firstDmResult = transition(ticket, { type: "FIRST_DM_SENT" });
+  if (firstDmResult.ok) {
     try {
       await updateTicket(trackingId, ticket.row_version, {
         status: firstDmResult.next,
@@ -837,8 +977,19 @@ export function makeMessageHandler(deps: HandlerDeps) {
       });
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("[events] updateTicket(AWAITING_APPROVAL) failed:", err);
+      console.error(
+        "[events] updateTicket(AWAITING_APPROVAL) failed:",
+        err,
+      );
     }
+  }
+
+  return {
+    kind: "ok",
+    trackingId,
+    approverId,
+    routeId: route.route_id,
+    item,
   };
 }
 
@@ -862,7 +1013,9 @@ interface ManualReviewArgs {
   confidence?: number;
 }
 
-async function routeToManualReview(args: ManualReviewArgs): Promise<void> {
+async function routeToManualReview(
+  args: ManualReviewArgs,
+): Promise<string | null> {
   const { client, config, sourceTs, channelId, userId, primary, reason } = args;
   const trackingId = await generateUniqueTrackingId();
   if (!trackingId) {
@@ -870,7 +1023,7 @@ async function routeToManualReview(args: ManualReviewArgs): Promise<void> {
     console.error(
       "[events] manual-review path: failed to allocate tracking ID; aborting.",
     );
-    return;
+    return null;
   }
 
   const requesterName = await fetchUserName(client, userId);
@@ -904,7 +1057,7 @@ async function routeToManualReview(args: ManualReviewArgs): Promise<void> {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[events] manual-review appendTicket failed:", err);
-    return;
+    return null;
   }
 
   await safeAudit({
@@ -927,6 +1080,8 @@ async function routeToManualReview(args: ManualReviewArgs): Promise<void> {
     // eslint-disable-next-line no-console
     console.error("[events] manual-review DM failed:", err);
   }
+
+  return trackingId;
 }
 
 interface AuditPayload {

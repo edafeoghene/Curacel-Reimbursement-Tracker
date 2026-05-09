@@ -5,11 +5,14 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import {
+  formatMultiItemAck,
   hasExpenseKeywords,
   resolveSubmission,
   __resetPendingNudgesForTests,
   __seedPendingNudgeForTests,
+  type ItemOutcome,
 } from "../../src/slack/events.js";
+import type { ClassifierItem } from "../../src/types.js";
 
 const CHANNEL = "C09FB2S5WJC";
 const REQUESTER = "U_REQ";
@@ -248,6 +251,115 @@ describe("resolveSubmission — thread reply", () => {
     );
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/not from the original requester/);
+  });
+});
+
+function makeItem(overrides: Partial<ClassifierItem> = {}): ClassifierItem {
+  return {
+    description: "Cab fare",
+    category: "transport",
+    amount: 5000,
+    currency: "NGN",
+    vendor: "Bolt",
+    date: "2026-05-09",
+    ...overrides,
+  };
+}
+
+describe("formatMultiItemAck", () => {
+  it("single ok item: terse 'Logged as <id>' line, same shape as before phase 1.4", () => {
+    const out: ItemOutcome[] = [
+      {
+        kind: "ok",
+        trackingId: "EXP-2605-A7K2",
+        approverId: "U_PATRICK",
+        routeId: "low-ngn",
+        item: makeItem(),
+      },
+    ];
+    expect(formatMultiItemAck(out)).toBe(
+      "Logged as `EXP-2605-A7K2`. Routing to <@U_PATRICK> for approval.",
+    );
+  });
+
+  it("single manual-review item with a tracking id: 'Logged X for manual review' line", () => {
+    const out: ItemOutcome[] = [
+      {
+        kind: "manual",
+        trackingId: "EXP-2605-MR01",
+        reason: "No matching route",
+        item: makeItem(),
+      },
+    ];
+    expect(formatMultiItemAck(out)).toMatch(
+      /Logged `EXP-2605-MR01` for manual review.*No matching route/,
+    );
+  });
+
+  it("single failure with no tracking id: 'Could not log' line, no id rendered", () => {
+    const out: ItemOutcome[] = [
+      {
+        kind: "manual",
+        trackingId: null,
+        reason: "Sheet not writable",
+        item: makeItem(),
+      },
+    ];
+    const msg = formatMultiItemAck(out);
+    expect(msg).toMatch(/Could not log/);
+    expect(msg).not.toMatch(/`EXP-/);
+  });
+
+  it("multi-item all ok: header + bullets with tracking, summary, approver", () => {
+    const out: ItemOutcome[] = [
+      {
+        kind: "ok",
+        trackingId: "EXP-2605-A001",
+        approverId: "U_A",
+        routeId: "low-ngn",
+        item: makeItem({ amount: 5000, currency: "NGN", category: "transport" }),
+      },
+      {
+        kind: "ok",
+        trackingId: "EXP-2605-B002",
+        approverId: "U_B",
+        routeId: "mid-ngn",
+        item: makeItem({ amount: 50000, currency: "NGN", category: "equipment" }),
+      },
+    ];
+    const msg = formatMultiItemAck(out);
+    expect(msg).toMatch(/^Logged 2 expenses from this message:/);
+    expect(msg).toContain("`EXP-2605-A001`");
+    expect(msg).toContain("`EXP-2605-B002`");
+    expect(msg).toContain("<@U_A>");
+    expect(msg).toContain("<@U_B>");
+    // Currency/category surfaced for each row.
+    expect(msg).toContain("NGN 5,000");
+    expect(msg).toContain("NGN 50,000");
+    expect(msg).toContain("transport");
+    expect(msg).toContain("equipment");
+  });
+
+  it("multi-item mixed ok + manual: each row shows its destination", () => {
+    const out: ItemOutcome[] = [
+      {
+        kind: "ok",
+        trackingId: "EXP-2605-OK01",
+        approverId: "U_A",
+        routeId: "low-ngn",
+        item: makeItem({ amount: 5000, currency: "NGN", category: "transport" }),
+      },
+      {
+        kind: "manual",
+        trackingId: "EXP-2605-MR02",
+        reason: "No matching route",
+        item: makeItem({ amount: 999_999, currency: "USD", category: "other" }),
+      },
+    ];
+    const msg = formatMultiItemAck(out);
+    expect(msg).toMatch(/Logged 2 expenses from this message:/);
+    expect(msg).toContain("<@U_A>");
+    expect(msg).toMatch(/EXP-2605-MR02.*manual review.*No matching route/);
   });
 });
 
