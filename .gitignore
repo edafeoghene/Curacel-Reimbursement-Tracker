@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+coverage/
+.DS_Store
+*.log
+
+# Local env
+.env
+.env.local
+.env.*.local
+
+# Service account credentials — never commit
+# Block any *.json that looks like Google service-account credentials specifically.
+edafeoghene-project-*.json
+*service-account*.json
+*-credentials*.json
+*.gserviceaccount*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Vitest
+.vitest-cache/
