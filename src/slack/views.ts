@@ -1,21 +1,31 @@
-// Block-kit builders for the Phase 1.0 DMs.
+// Block-kit builders for the Phase 1.0/1.1 DMs.
 //
 // Stable action_ids:
 //   - expense_approve
+//   - expense_reject       (Phase 1.1)
 //   - expense_mark_paid
 //
-// `tracking_id` is carried in the button's `value` field so handlers can
-// resolve the ticket without parsing block IDs.
+// Modal callback_ids:
+//   - expense_reject_modal (Phase 1.1)
 //
-// Phase 1.1+ (reject / clarify / delegate) buttons are intentionally NOT
-// emitted here yet.
+// `tracking_id` is carried in the button's `value` field so handlers can
+// resolve the ticket without parsing block IDs. For modals, the same id
+// rides on `private_metadata` so the submit handler doesn't depend on a
+// stale button value.
+//
+// Phase 1.2+ (clarify / delegate) buttons are intentionally NOT emitted yet.
 
 import type { Ticket } from "../types.js";
 
 export type Block = Record<string, unknown>;
 
 export const ACTION_APPROVE = "expense_approve";
+export const ACTION_REJECT = "expense_reject";
 export const ACTION_MARK_PAID = "expense_mark_paid";
+
+export const MODAL_REJECT_CALLBACK_ID = "expense_reject_modal";
+export const REJECT_REASON_BLOCK_ID = "reject_reason_block";
+export const REJECT_REASON_ACTION_ID = "reject_reason_input";
 
 // ---------- helpers ----------
 
@@ -107,6 +117,13 @@ export function approverDmBlocks(ticket: Ticket): {
         action_id: ACTION_APPROVE,
         style: "primary",
         text: { type: "plain_text", text: "Approve" },
+        value: ticket.tracking_id,
+      },
+      {
+        type: "button",
+        action_id: ACTION_REJECT,
+        style: "danger",
+        text: { type: "plain_text", text: "Reject" },
         value: ticket.tracking_id,
       },
     ],
@@ -207,6 +224,85 @@ export function financialManagerDmAfterMarkPaid(ticket: Ticket): {
 
   const fallbackText = `Awaiting payment proof for ${ticket.tracking_id}`;
   return { blocks, fallbackText };
+}
+
+// ---------- approver DM: after reject (Phase 1.1) ----------
+
+export function approverDmAfterReject(
+  ticket: Ticket,
+  rejectedAt: Date,
+  approverName: string,
+  reason: string,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("Expense approval needed"),
+    summaryFields(ticket),
+    descriptionBlock(ticket),
+  ];
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  blocks.push(divider());
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `:x: Rejected · ${hhmm(rejectedAt)} · ${approverName}`,
+      },
+    ],
+  });
+  blocks.push({
+    type: "section",
+    text: { type: "mrkdwn", text: `*Reason:* ${reason}` },
+  });
+
+  const fallbackText = `Rejected: ${ticket.tracking_id}`;
+  return { blocks, fallbackText };
+}
+
+// ---------- reject reason modal (Phase 1.1) ----------
+
+/**
+ * Modal opened when an approver clicks "Reject". Submission carries the
+ * reason in `view.state.values[REJECT_REASON_BLOCK_ID][REJECT_REASON_ACTION_ID].value`,
+ * and the tracking_id rides on `view.private_metadata` (more reliable than
+ * a button value because the modal can be opened then submitted minutes
+ * later, by which time the original button payload may be irrelevant).
+ */
+export function rejectionReasonModal(trackingId: string): Block {
+  return {
+    type: "modal",
+    callback_id: MODAL_REJECT_CALLBACK_ID,
+    private_metadata: trackingId,
+    title: { type: "plain_text", text: "Reject expense" },
+    submit: { type: "plain_text", text: "Submit" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `Rejecting \`${trackingId}\`. The requester will see this reason in the channel thread.`,
+        },
+      },
+      {
+        type: "input",
+        block_id: REJECT_REASON_BLOCK_ID,
+        label: { type: "plain_text", text: "Reason" },
+        element: {
+          type: "plain_text_input",
+          action_id: REJECT_REASON_ACTION_ID,
+          multiline: true,
+          max_length: 500,
+          placeholder: {
+            type: "plain_text",
+            text: "e.g. Receipt unreadable — please re-upload.",
+          },
+        },
+      },
+    ],
+  };
 }
 
 // ---------- manual review DM ----------

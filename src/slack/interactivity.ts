@@ -24,8 +24,13 @@ import { dmUser, postEphemeral, updateMessage } from "./messaging.js";
 import { PAYMENT_STEP_SENTINEL, safeAudit } from "./events.js";
 import {
   approverDmAfterApprove,
+  approverDmAfterReject,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
+  MODAL_REJECT_CALLBACK_ID,
+  REJECT_REASON_ACTION_ID,
+  REJECT_REASON_BLOCK_ID,
+  rejectionReasonModal,
 } from "./views.js";
 
 interface Deps {
@@ -235,6 +240,257 @@ function makeApproveHandler({ config }: Deps) {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[interactivity] DM to financial manager failed:", err);
+    }
+  };
+}
+
+// ---------- reject (Phase 1.1) ----------
+
+/**
+ * Reject button handler. Authorization is checked here AND again at modal
+ * submission time, because the modal can stay open for minutes — by the
+ * time the user submits, state may have shifted (e.g. delegation, terminal
+ * status). Re-checking is cheap and structurally important.
+ */
+function makeRejectButtonHandler() {
+  return async ({
+    ack,
+    body,
+    client,
+    action,
+  }: {
+    ack: () => Promise<void>;
+    body: BlockAction;
+    client: WebClient;
+    action: ButtonAction;
+  }): Promise<void> => {
+    await ack();
+
+    const trackingId = action.value;
+    if (!trackingId) {
+      // eslint-disable-next-line no-console
+      console.warn("[interactivity] expense_reject: missing tracking_id value");
+      return;
+    }
+
+    const clickerId = body.user.id;
+    const channelId = body.channel?.id ?? "";
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            `Ticket \`${trackingId}\` could not be found.`,
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (clickerId !== ticket.current_approver_user_id) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: clickerId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_reject",
+          expected: ticket.current_approver_user_id,
+          got: clickerId,
+        },
+      });
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            "You are not the assigned approver for this ticket.",
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    // Open the reason modal. trigger_id is short-lived (~3s) — opening
+    // immediately after ack is essential.
+    if (!body.trigger_id) {
+      // eslint-disable-next-line no-console
+      console.warn("[interactivity] expense_reject: missing trigger_id");
+      return;
+    }
+    try {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        view: rejectionReasonModal(trackingId) as any,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[interactivity] views.open(reject modal) failed:", err);
+    }
+  };
+}
+
+/**
+ * Reject modal submission handler. Re-fetches the ticket, re-authorizes,
+ * runs the state machine, updates the approval row + ticket, edits the
+ * approver DM to remove buttons + show the rejection, and posts the
+ * rejection notice in the requester's source thread.
+ */
+function makeRejectModalSubmitHandler() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (args: any): Promise<void> => {
+    await args.ack();
+
+    const view = args.body.view;
+    const clickerId = args.body.user.id;
+    const trackingId: string = view.private_metadata ?? "";
+    const reasonRaw: string =
+      view.state?.values?.[REJECT_REASON_BLOCK_ID]?.[REJECT_REASON_ACTION_ID]
+        ?.value ?? "";
+    const reason = reasonRaw.trim();
+
+    if (!trackingId || !reason) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] reject modal submit: missing tracking_id or reason",
+      );
+      return;
+    }
+
+    const client: WebClient = args.client;
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[interactivity] reject modal submit: ticket ${trackingId} not found`,
+      );
+      return;
+    }
+
+    if (clickerId !== ticket.current_approver_user_id) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: clickerId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_reject_submit",
+          expected: ticket.current_approver_user_id,
+          got: clickerId,
+        },
+      });
+      return;
+    }
+
+    const result = transition(ticket, {
+      type: "REJECT",
+      step: ticket.current_step,
+      approver_user_id: clickerId,
+      reason,
+    });
+    if (!result.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[interactivity] expense_reject illegal: ${result.error}`,
+      );
+      return;
+    }
+
+    // Find the pending approval row for the current step.
+    const approvals = await listApprovalsForTicket(trackingId);
+    const pending = approvals.find(
+      (a) =>
+        a.step_number === ticket.current_step && a.decision === "PENDING",
+    );
+
+    const decidedAt = new Date();
+    const decidedAtIso = decidedAt.toISOString();
+
+    if (pending) {
+      try {
+        await updateApprovalDecision(pending.approval_id, {
+          decision: "REJECTED",
+          decided_at: decidedAtIso,
+          comment: reason,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[interactivity] updateApprovalDecision(REJECT) failed:",
+          err,
+        );
+      }
+    }
+
+    let updatedTicket: Ticket;
+    try {
+      updatedTicket = await updateTicket(trackingId, ticket.row_version, {
+        status: result.next,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[interactivity] updateTicket(REJECTED) failed:", err);
+      return;
+    }
+
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: clickerId,
+      event_type: AUDIT_EVENTS.APPROVAL_REJECTED,
+      details: { step: ticket.current_step, reason, decided_at: decidedAtIso },
+    });
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: clickerId,
+      event_type: AUDIT_EVENTS.STATE_TRANSITION,
+      details: { event: "REJECT", from: ticket.status, to: result.next, reason },
+    });
+
+    // Edit the approver DM to remove buttons and show the rejection.
+    if (pending?.dm_channel_id && pending?.message_ts) {
+      try {
+        const approverName = pending.approver_name ?? `<@${clickerId}>`;
+        const { blocks, fallbackText } = approverDmAfterReject(
+          updatedTicket,
+          decidedAt,
+          approverName,
+          reason,
+        );
+        await updateMessage(
+          client,
+          pending.dm_channel_id,
+          pending.message_ts,
+          blocks,
+          fallbackText,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[interactivity] approver DM update (reject) failed:", err);
+      }
+    }
+
+    // Notify the requester in the source thread.
+    try {
+      await client.chat.postMessage({
+        channel: updatedTicket.source_channel_id,
+        thread_ts: updatedTicket.source_message_ts,
+        text: `Sorry <@${updatedTicket.requester_user_id}>, expense \`${updatedTicket.tracking_id}\` was rejected by <@${clickerId}>.\n*Reason:* ${reason}`,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] thread notify (reject) failed:",
+        err,
+      );
     }
   };
 }
@@ -541,6 +797,8 @@ export function registerInteractivity(app: App, deps: Deps): void {
   // Bolt's `app.action(id, handler)` types are loose — cast handler to the
   // shape Bolt provides. We accept BlockAction with a ButtonAction element.
   const approveHandler = makeApproveHandler(deps);
+  const rejectButtonHandler = makeRejectButtonHandler();
+  const rejectModalSubmitHandler = makeRejectModalSubmitHandler();
   const markPaidHandler = makeMarkPaidHandler(deps);
   const fileShareHandler = makeFileShareHandler(deps);
 
@@ -555,6 +813,31 @@ export function registerInteractivity(app: App, deps: Deps): void {
         client: args.client as WebClient,
         action,
       });
+    },
+  );
+
+  app.action(
+    "expense_reject",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (args: any) => {
+      const action = args.action as ButtonAction;
+      await rejectButtonHandler({
+        ack: args.ack,
+        body: args.body as BlockAction,
+        client: args.client as WebClient,
+        action,
+      });
+    },
+  );
+
+  // Reject modal submission. Bolt's `app.view(callback_id, handler)` matches
+  // by callback_id. Authorization is re-checked inside the handler because
+  // the modal can stay open after the underlying state has shifted.
+  app.view(
+    MODAL_REJECT_CALLBACK_ID,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (args: any) => {
+      await rejectModalSubmitHandler(args);
     },
   );
 

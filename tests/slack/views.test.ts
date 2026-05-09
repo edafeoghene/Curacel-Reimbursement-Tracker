@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   ACTION_APPROVE,
   ACTION_MARK_PAID,
+  ACTION_REJECT,
   approverDmAfterApprove,
+  approverDmAfterReject,
   approverDmBlocks,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
   manualReviewDmBlocks,
+  MODAL_REJECT_CALLBACK_ID,
+  REJECT_REASON_ACTION_ID,
+  REJECT_REASON_BLOCK_ID,
+  rejectionReasonModal,
 } from "../../src/slack/views.js";
 import type { Ticket } from "../../src/types.js";
 
@@ -61,6 +67,94 @@ describe("approverDmBlocks", () => {
     const { blocks } = approverDmBlocks(t);
     const ctx = blocks.find((b) => b.type === "context");
     expect(ctx).toBeUndefined();
+  });
+
+  it("includes a Reject button (danger style) alongside Approve", () => {
+    const ticket = makeTicket();
+    const { blocks } = approverDmBlocks(ticket);
+    const actions = findActionsBlock(blocks) as {
+      elements: Array<Record<string, unknown>>;
+    };
+    const action_ids = actions.elements.map((e) => e.action_id);
+    expect(action_ids).toContain(ACTION_APPROVE);
+    expect(action_ids).toContain(ACTION_REJECT);
+
+    const rejectBtn = actions.elements.find(
+      (e) => e.action_id === ACTION_REJECT,
+    );
+    expect(rejectBtn).toBeDefined();
+    expect(rejectBtn?.style).toBe("danger");
+    expect(rejectBtn?.value).toBe(ticket.tracking_id);
+  });
+});
+
+describe("approverDmAfterReject", () => {
+  it("drops actions, shows the rejected context and the reason", () => {
+    const t = makeTicket();
+    const reason = "Receipt unreadable; please re-upload.";
+    const { blocks, fallbackText } = approverDmAfterReject(
+      t,
+      new Date("2026-05-09T14:32:00Z"),
+      "Stephan",
+      reason,
+    );
+    expect(findActionsBlock(blocks)).toBeUndefined();
+    expect(fallbackText).toMatch(/Rejected/i);
+
+    const allContexts = blocks.filter((b) => b.type === "context");
+    const rejectedCtx = allContexts.find((c) => {
+      const els = (c as { elements: Array<{ text?: string }> }).elements ?? [];
+      return els.some((e) => typeof e.text === "string" && /Rejected/.test(e.text));
+    });
+    expect(rejectedCtx).toBeDefined();
+
+    const hasReason = blocks.some(
+      (b) =>
+        b.type === "section" &&
+        typeof (b as { text?: { text?: string } }).text?.text === "string" &&
+        new RegExp(reason).test((b as { text: { text: string } }).text.text),
+    );
+    expect(hasReason).toBe(true);
+  });
+});
+
+describe("rejectionReasonModal", () => {
+  it("returns a modal view carrying tracking_id in private_metadata and a multiline reason input", () => {
+    const trackingId = "EXP-2605-A7K2";
+    const view = rejectionReasonModal(trackingId) as {
+      type: string;
+      callback_id: string;
+      private_metadata: string;
+      blocks: Array<Record<string, unknown>>;
+      submit?: { type: string; text: string };
+      close?: { type: string; text: string };
+    };
+    expect(view.type).toBe("modal");
+    expect(view.callback_id).toBe(MODAL_REJECT_CALLBACK_ID);
+    expect(view.private_metadata).toBe(trackingId);
+    expect(view.submit?.text).toBeTruthy();
+    expect(view.close?.text).toBeTruthy();
+
+    const inputBlock = view.blocks.find(
+      (b) => b.type === "input" && b.block_id === REJECT_REASON_BLOCK_ID,
+    ) as { element: Record<string, unknown> } | undefined;
+    expect(inputBlock).toBeDefined();
+    expect(inputBlock?.element.action_id).toBe(REJECT_REASON_ACTION_ID);
+    expect(inputBlock?.element.type).toBe("plain_text_input");
+    expect(inputBlock?.element.multiline).toBe(true);
+  });
+
+  it("renders the tracking_id in the modal copy so the user knows what they're rejecting", () => {
+    const view = rejectionReasonModal("EXP-2605-XYZW") as {
+      blocks: Array<Record<string, unknown>>;
+    };
+    const hasIdInCopy = view.blocks.some(
+      (b) =>
+        b.type === "section" &&
+        typeof (b as { text?: { text?: string } }).text?.text === "string" &&
+        /EXP-2605-XYZW/.test((b as { text: { text: string } }).text.text),
+    );
+    expect(hasIdInCopy).toBe(true);
   });
 });
 

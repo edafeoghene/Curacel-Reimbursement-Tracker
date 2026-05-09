@@ -80,8 +80,8 @@ A read-only Next.js frontend that visualizes the bot's work and the Sheet's data
 - ❌ Bitbucket Pipelines (deploy via Railway CLI directly)
 - ❌ Public HTTPS webhook for Slack (use Socket Mode)
 - ❌ Approvals in a shared private channel (we chose DMs)
-- ❌ Auto-creating tickets from thread replies
-- ❌ Auto-reprocessing edited messages
+- ❌ Auto-creating tickets from thread replies — **except** as completion of a pre-classify nudge (§8). A thread reply is processed only when the parent message previously triggered an in-memory `pendingNudges` entry AND the reply is from the original requester. Edits and replies on already-logged tickets are still ignored.
+- ❌ Auto-reprocessing edited messages — **except** as completion of a pre-classify nudge (§8). An edit is processed only when the original message ts is in `pendingNudges`.
 
 ---
 
@@ -286,9 +286,17 @@ Store `file.id` and `file.url_private` on the ticket row. The URL is permanent i
 - **Multi-expense splitting:** "Group items as one expense if they share a single purpose or trip (e.g., outbound + return Uber for the same meeting). Split into separate expenses if items are for unrelated purposes (e.g., a laptop repair and a team lunch)." Each item in the array becomes its own ticket with its own tracking ID.
 - **Amount/currency reconciliation:** if message says one amount and receipt says another, prefer the receipt and add a note flagging the discrepancy.
 
-### Pre-classification gate
+### Pre-classification gate (smart, two-stage)
 
-Before calling the LLM, require either an attachment **or** a parseable amount in the message text. Messages with neither are likely chatter — post an ephemeral nudge to the user ("Looks like an expense? Please attach a receipt or include the amount.") and skip classification.
+Before calling the LLM:
+
+1. If the message has an attachment **or** a parseable amount in the text → proceed to classification.
+2. Otherwise, run a cheap regex check (`hasExpenseKeywords`) against the text for expense-shaped vocabulary (uber, bolt, paid, invoice, repair, subscription, lunch, ...). Three outcomes:
+   - **Has expense keywords:** post the ephemeral nudge ("Looks like an expense — please attach a receipt or include the amount. Edit the message or reply in this thread with the missing piece and I'll log it.") AND register the source ts in an in-memory `pendingNudges` map (TTL 30 min, lazy GC, max 200 entries).
+   - **No keywords (pure chatter):** silent drop. No nudge.
+3. When a `message_changed` arrives whose parent ts is in `pendingNudges`, OR a thread reply arrives on a parent ts in `pendingNudges` (from the original requester), re-enter the pipeline using the new text/files and anchor the resulting ticket on the *parent* ts. Consume the nudge entry on success.
+
+**State location:** `pendingNudges` is in-memory. Bot restart clears it; users can re-post in that case. PLAN §4 forbids persistent state outside Sheets, but pending nudges aren't load-bearing — they're a UX nicety.
 
 ---
 
@@ -553,8 +561,11 @@ Slash command `/expense-cancel <tracking_id>`. Only the requester or financial m
 
 | Case | Handling |
 |---|---|
-| Thread reply in `#expenses` | **Ignored.** Filter at event handler. |
-| Edit to original message after logging | **Ignored.** Filter `message_changed` subtype. |
+| Thread reply in `#expenses` (parent has no pending nudge) | **Ignored.** Filter at event handler. |
+| Thread reply in `#expenses` (parent has a pending nudge, reply is from the original requester) | **Processed** as a nudge completion — combined parent+reply text and reply files re-enter the pipeline, ticket anchors on the parent ts. |
+| Edit to original message after a ticket has been logged | **Ignored.** Filter `message_changed` subtype. |
+| Edit to a message that has a pending nudge (no ticket yet) | **Processed** as a nudge completion — new text/files re-enter the pipeline, ticket anchors on the original ts. |
+| Pure chatter ("hello", "good morning") with no attachment, no amount, no expense keywords | **Silent drop.** No ephemeral, no LLM call. |
 | Multiple expenses in one message, related | LLM groups as one ticket. |
 | Multiple expenses in one message, unrelated | LLM splits; bot creates N tickets, one ack listing all IDs. |
 | LLM returns `is_expense: false` | Bot does nothing. No reply. |
@@ -792,11 +803,11 @@ The minimum end-to-end working bot. **No hardcoded approver IDs anywhere in code
 
 ### Phase 1.1 — Reject branch
 
-- [ ] Reject button → modal for reason
-- [ ] Modal submit → state = REJECTED, post in requester thread
-- [ ] Edit DM to show rejection
-- [ ] Audit log entry
-- [ ] Test: rejection flow end-to-end
+- [x] Reject button → modal for reason
+- [x] Modal submit → state = REJECTED, post in requester thread
+- [x] Edit DM to show rejection
+- [x] Audit log entry
+- [x] Test: rejection flow end-to-end (validated 2026-05-09 — `EXP-2605-RVYP`)
 
 ### Phase 1.2 — Clarification branch
 

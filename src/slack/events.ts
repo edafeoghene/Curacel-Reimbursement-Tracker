@@ -52,6 +52,69 @@ function hasParseableAmount(text: string | undefined): boolean {
   return AMOUNT_REGEX.test(text);
 }
 
+// Cheap heuristic: words that strongly suggest the user is trying to log an
+// expense or invoice. Used for the smart pre-classify gate so that pure
+// chatter ("hello") is silently dropped without an LLM call AND without an
+// ephemeral nudge. Keep this regex tight — false positives here cost a
+// (visible to one user) ephemeral; false negatives mean a real expense
+// without amount/receipt is silently dropped (the user must add one).
+const EXPENSE_KEYWORD_REGEX = new RegExp(
+  String.raw`\b(uber|bolt|taxi|cab|ride|fare|paid|spent|bought|purchas(?:e[ds]?|ing)|expens(?:e|ing|es)|invoice|reimburs|refund|trip|travel|fuel|petrol|airfare|flight|hotel|airbnb|meal|lunch|dinner|breakfast|catering|subscription|saas|domain|hosting|tool(?:ing)?|repair(?:ed|s|ing)?|fix(?:ed|ing)?|equipment|laptop|monitor|keyboard|courier|dispatch|delivery|payment|fee|cost|bill|receipt|expense)\b`,
+  "i",
+);
+export function hasExpenseKeywords(text: string | undefined): boolean {
+  if (!text) return false;
+  return EXPENSE_KEYWORD_REGEX.test(text);
+}
+
+// In-memory store of source-message timestamps that triggered an ephemeral
+// "looks like an expense?" nudge. When the user later edits the original
+// message OR replies in thread with a receipt/amount, we re-enter the
+// classification pipeline using those new inputs and anchor the ticket on
+// the original ts. PLAN.md §3 carve-out: this is the ONLY path through
+// which message_changed and thread replies are allowed to create tickets.
+//
+// State is intentionally in-memory — bot restart loses pending nudges,
+// which the user can resolve by re-posting. PLAN.md §4 forbids persistent
+// state outside Sheets, and pending nudges aren't load-bearing data.
+interface PendingNudge {
+  source_message_ts: string;
+  channel_id: string;
+  requester_user_id: string;
+  parent_text: string;
+  posted_at_ms: number;
+}
+const pendingNudges = new Map<string, PendingNudge>();
+const NUDGE_TTL_MS = 30 * 60 * 1000; // 30 min
+const NUDGE_MAX = 200; // defensive cap
+
+/** Lazy GC — runs at the top of every message handler invocation. */
+function gcNudges(now = Date.now()): void {
+  if (pendingNudges.size === 0) return;
+  for (const [ts, n] of pendingNudges) {
+    if (now - n.posted_at_ms > NUDGE_TTL_MS) pendingNudges.delete(ts);
+  }
+  if (pendingNudges.size > NUDGE_MAX) {
+    const sorted = [...pendingNudges.entries()].sort(
+      (a, b) => a[1].posted_at_ms - b[1].posted_at_ms,
+    );
+    while (sorted.length > NUDGE_MAX) {
+      const next = sorted.shift();
+      if (next) pendingNudges.delete(next[0]);
+    }
+  }
+}
+
+/** Test-only escape hatch for resetting in-memory pending state between cases. */
+export function __resetPendingNudgesForTests(): void {
+  pendingNudges.clear();
+}
+
+/** Test-only: seed a pending nudge so the edit/thread paths can be exercised. */
+export function __seedPendingNudgeForTests(n: PendingNudge): void {
+  pendingNudges.set(n.source_message_ts, n);
+}
+
 async function fetchUserName(
   client: WebClient,
   userId: string,
@@ -80,6 +143,151 @@ interface SlackFilePartial {
   mimetype?: string;
   filetype?: string;
   name?: string;
+}
+
+/**
+ * Resolved submission shape — what events.ts pipeline operates on after
+ * the dispatch stage figures out whether this is a brand-new top-level
+ * message, an edit completing a pending nudge, or a thread reply
+ * completing a pending nudge.
+ *
+ * `source_message_ts` is always the parent ts (the one a ticket should
+ * anchor on), so thread replies and edits both produce a submission
+ * keyed on the original message — never on the reply/edit event itself.
+ */
+interface ResolvedSubmission {
+  kind: "new" | "edit-completion" | "thread-completion";
+  source_message_ts: string;
+  channel_id: string;
+  user_id: string;
+  text: string;
+  files: SlackFilePartial[];
+  /** True when this submission consumes a pending nudge entry. */
+  consumes_nudge_ts: string | null;
+}
+
+interface RawMsg {
+  channel?: string;
+  subtype?: string;
+  bot_id?: string;
+  thread_ts?: string;
+  ts?: string;
+  user?: string;
+  text?: string;
+  files?: SlackFilePartial[];
+  message?: {
+    ts?: string;
+    text?: string;
+    files?: SlackFilePartial[];
+    user?: string;
+  };
+  previous_message?: { ts?: string };
+}
+
+/**
+ * Pure dispatch logic. Decides whether the incoming Slack message becomes
+ * a submission to the pipeline, and if so, what its effective inputs are.
+ *
+ * This is the single place where PLAN.md §7's filter rules and the
+ * §3 nudge-completion carve-out coexist:
+ *   - message_changed → only allowed when the parent ts is in pendingNudges
+ *   - thread reply    → only allowed when the parent ts is in pendingNudges
+ *                        AND the reply is from the original requester
+ *   - everything else (edits/threads on logged tickets, bots, deletes) → drop
+ *
+ * Exported for unit testing.
+ */
+export function resolveSubmission(
+  raw: RawMsg,
+  expensesChannelId: string,
+  nudges: Map<string, PendingNudge>,
+):
+  | { ok: true; submission: ResolvedSubmission }
+  | { ok: false; reason: string } {
+  if (raw.channel !== expensesChannelId)
+    return { ok: false, reason: "wrong channel" };
+  if (raw.bot_id) return { ok: false, reason: "bot message" };
+  if (raw.subtype === "message_deleted") return { ok: false, reason: "deleted" };
+
+  // Edit path — only valid as a completion of a pending nudge.
+  if (raw.subtype === "message_changed") {
+    const inner = raw.message;
+    const parentTs = inner?.ts ?? raw.previous_message?.ts;
+    if (!parentTs) return { ok: false, reason: "edit without parent ts" };
+    const pending = nudges.get(parentTs);
+    if (!pending) {
+      return {
+        ok: false,
+        reason: "edit on non-nudged message — ignored per PLAN.md §14",
+      };
+    }
+    return {
+      ok: true,
+      submission: {
+        kind: "edit-completion",
+        source_message_ts: parentTs,
+        channel_id: pending.channel_id,
+        user_id: pending.requester_user_id,
+        text: (inner?.text ?? pending.parent_text).trim(),
+        files: inner?.files ?? [],
+        consumes_nudge_ts: parentTs,
+      },
+    };
+  }
+
+  // Thread reply — only valid as a completion of a pending nudge,
+  // and only from the original requester.
+  if (raw.thread_ts && raw.thread_ts !== raw.ts) {
+    const pending = nudges.get(raw.thread_ts);
+    if (!pending) {
+      return {
+        ok: false,
+        reason: "thread reply on non-nudged message — ignored per PLAN.md §7",
+      };
+    }
+    if (raw.user && raw.user !== pending.requester_user_id) {
+      return {
+        ok: false,
+        reason: "thread reply not from the original requester",
+      };
+    }
+    // Combine parent text + reply text so amount/keywords from either count.
+    const replyText = raw.text ?? "";
+    const combined = `${pending.parent_text}\n${replyText}`.trim();
+    return {
+      ok: true,
+      submission: {
+        kind: "thread-completion",
+        source_message_ts: raw.thread_ts,
+        channel_id: pending.channel_id,
+        user_id: pending.requester_user_id,
+        text: combined,
+        files: raw.files ?? [],
+        consumes_nudge_ts: raw.thread_ts,
+      },
+    };
+  }
+
+  // Top-level path. Allow no-subtype and file_share; reject anything else
+  // (e.g. channel_join, channel_topic — chatter that isn't an expense).
+  if (raw.subtype && raw.subtype !== "file_share") {
+    return { ok: false, reason: `subtype ${raw.subtype}` };
+  }
+  if (!raw.user || !raw.ts) {
+    return { ok: false, reason: "missing user or ts" };
+  }
+  return {
+    ok: true,
+    submission: {
+      kind: "new",
+      source_message_ts: raw.ts,
+      channel_id: raw.channel,
+      user_id: raw.user,
+      text: raw.text ?? "",
+      files: raw.files ?? [],
+      consumes_nudge_ts: null,
+    },
+  };
 }
 
 /**
@@ -153,47 +361,89 @@ export function makeMessageHandler(deps: HandlerDeps) {
     client: WebClient;
     say: SayFn;
   }): Promise<void> => {
-    // ---- Filter: PLAN.md §7 ----
-    // Only the source channel.
-    const anyMsg = message as unknown as {
-      channel?: string;
-      subtype?: string;
-      bot_id?: string;
-      thread_ts?: string;
-      ts?: string;
-      user?: string;
-      text?: string;
-      files?: SlackFilePartial[];
-    };
+    gcNudges();
 
-    if (anyMsg.channel !== config.EXPENSES_CHANNEL_ID) return;
-    if (anyMsg.subtype === "message_changed") return;
-    if (anyMsg.subtype === "message_deleted") return;
-    if (anyMsg.bot_id) return;
-    if (anyMsg.thread_ts && anyMsg.thread_ts !== anyMsg.ts) return;
-    if (!anyMsg.user || !anyMsg.ts) return;
+    const raw = message as unknown as RawMsg;
 
-    const sourceTs = anyMsg.ts;
-    const userId = anyMsg.user;
-    const text = anyMsg.text ?? "";
-    const files = anyMsg.files ?? [];
+    // Breadcrumb: one line per delivered event so we can tell from logs
+    // whether Slack is delivering and what shape we got.
+    // eslint-disable-next-line no-console
+    console.info(
+      `[events] message received channel=${raw.channel ?? "?"} subtype=${raw.subtype ?? "(none)"} user=${raw.user ?? "?"} ts=${raw.ts ?? "?"} thread_ts=${raw.thread_ts ?? ""} files=${(raw.files ?? []).length}`,
+    );
 
-    // ---- Pre-classification gate ----
+    const dispatch = resolveSubmission(
+      raw,
+      config.EXPENSES_CHANNEL_ID,
+      pendingNudges,
+    );
+    if (!dispatch.ok) {
+      // eslint-disable-next-line no-console
+      console.info(`[events] dropped: ${dispatch.reason}`);
+      return;
+    }
+
+    const sub = dispatch.submission;
+    const sourceTs = sub.source_message_ts;
+    const userId = sub.user_id;
+    const text = sub.text;
+    const files = sub.files;
+
+    // ---- Smart pre-classification gate ----
+    // Tightened from "no files AND no amount → nudge" to
+    // "no files AND no amount AND text looks expense-shaped → nudge."
+    // Pure chatter ("hello") is silently dropped now.
     const hasFiles = files.length > 0;
     const hasAmount = hasParseableAmount(text);
     if (!hasFiles && !hasAmount) {
+      // Don't nudge twice for the same parent — the user is in a state where
+      // we already asked them to add something.
+      if (sub.kind !== "new") {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[events] ${sub.kind} for ${sourceTs} arrived without files/amount; staying silent (waiting for further input).`,
+        );
+        return;
+      }
+      if (!hasExpenseKeywords(text)) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[events] ${sourceTs} dropped: no files, no amount, no expense-shaped keywords (chatter)`,
+        );
+        return;
+      }
+      // Looks like an expense intent that's missing a piece — nudge AND
+      // register so we pick up the user's edit/thread-reply when they
+      // complete the message.
       try {
         await postEphemeral(
           client,
           config.EXPENSES_CHANNEL_ID,
           userId,
-          "Looks like an expense? Please attach a receipt or include the amount.",
+          "Looks like an expense — please attach a receipt or include the amount. Edit the message or reply in this thread with the missing piece and I'll log it.",
+        );
+        pendingNudges.set(sourceTs, {
+          source_message_ts: sourceTs,
+          channel_id: config.EXPENSES_CHANNEL_ID,
+          requester_user_id: userId,
+          parent_text: text,
+          posted_at_ms: Date.now(),
+        });
+        // eslint-disable-next-line no-console
+        console.info(
+          `[events] nudged ${sourceTs}; pending nudges = ${pendingNudges.size}`,
         );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn("[events] postEphemeral nudge failed:", err);
       }
       return;
+    }
+
+    // We're going to attempt to create a ticket — consume any pending nudge
+    // for this parent ts so future edits/replies don't keep re-triggering.
+    if (sub.consumes_nudge_ts) {
+      pendingNudges.delete(sub.consumes_nudge_ts);
     }
 
     // ---- Idempotency: skip if a ticket already exists for this ts ----
