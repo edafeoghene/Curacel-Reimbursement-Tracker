@@ -1,14 +1,16 @@
-// Block-kit builders for the Phase 1.0/1.1/1.2 DMs.
+// Block-kit builders for the Phase 1.0/1.1/1.2/1.3 DMs.
 //
 // Stable action_ids:
 //   - expense_approve
 //   - expense_reject       (Phase 1.1)
 //   - expense_clarify      (Phase 1.2)
+//   - expense_delegate     (Phase 1.3)
 //   - expense_mark_paid
 //
 // Modal callback_ids:
-//   - expense_reject_modal  (Phase 1.1)
-//   - expense_clarify_modal (Phase 1.2)
+//   - expense_reject_modal   (Phase 1.1)
+//   - expense_clarify_modal  (Phase 1.2)
+//   - expense_delegate_modal (Phase 1.3)
 //
 // `tracking_id` is carried in the button's `value` field so handlers can
 // resolve the ticket without parsing block IDs. For modals, the same id
@@ -22,6 +24,7 @@ export type Block = Record<string, unknown>;
 export const ACTION_APPROVE = "expense_approve";
 export const ACTION_REJECT = "expense_reject";
 export const ACTION_CLARIFY = "expense_clarify";
+export const ACTION_DELEGATE = "expense_delegate";
 export const ACTION_MARK_PAID = "expense_mark_paid";
 
 export const MODAL_REJECT_CALLBACK_ID = "expense_reject_modal";
@@ -31,6 +34,10 @@ export const REJECT_REASON_ACTION_ID = "reject_reason_input";
 export const MODAL_CLARIFY_CALLBACK_ID = "expense_clarify_modal";
 export const CLARIFY_QUESTION_BLOCK_ID = "clarify_question_block";
 export const CLARIFY_QUESTION_ACTION_ID = "clarify_question_input";
+
+export const MODAL_DELEGATE_CALLBACK_ID = "expense_delegate_modal";
+export const DELEGATE_USER_BLOCK_ID = "delegate_user_block";
+export const DELEGATE_USER_ACTION_ID = "delegate_user_input";
 
 // ---------- helpers ----------
 
@@ -130,6 +137,13 @@ export function approverDmBlocks(ticket: Ticket): {
         // Neutral button — no `style` field. Clarify is a question, not an
         // approval or a rejection.
         text: { type: "plain_text", text: "Clarify" },
+        value: ticket.tracking_id,
+      },
+      {
+        type: "button",
+        action_id: ACTION_DELEGATE,
+        // Neutral — handing off, not a decision.
+        text: { type: "plain_text", text: "Delegate" },
         value: ticket.tracking_id,
       },
       {
@@ -372,6 +386,75 @@ export function clarificationQuestionModal(trackingId: string): Block {
             type: "plain_text",
             text: "e.g. Who is this laptop for, and is it a replacement?",
           },
+        },
+      },
+    ],
+  };
+}
+
+// ---------- approver DM: after delegate (Phase 1.3) ----------
+
+export function approverDmAfterDelegate(
+  ticket: Ticket,
+  delegatedAt: Date,
+  fromName: string,
+  toUserId: string,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("Expense approval needed"),
+    summaryFields(ticket),
+    descriptionBlock(ticket),
+  ];
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  blocks.push(divider());
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `:busts_in_silhouette: Delegated to <@${toUserId}> · ${hhmm(delegatedAt)} · by ${fromName}`,
+      },
+    ],
+  });
+
+  const fallbackText = `Delegated: ${ticket.tracking_id}`;
+  return { blocks, fallbackText };
+}
+
+// ---------- delegate user-picker modal (Phase 1.3) ----------
+
+/**
+ * Modal opened when an approver clicks "Delegate". Submission carries the
+ * chosen user id in
+ * `view.state.values[DELEGATE_USER_BLOCK_ID][DELEGATE_USER_ACTION_ID].selected_user`,
+ * and the tracking_id rides on `view.private_metadata`.
+ */
+export function delegateUserPickerModal(trackingId: string): Block {
+  return {
+    type: "modal",
+    callback_id: MODAL_DELEGATE_CALLBACK_ID,
+    private_metadata: trackingId,
+    title: { type: "plain_text", text: "Delegate approval" },
+    submit: { type: "plain_text", text: "Delegate" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `Delegating \`${trackingId}\`. The new approver will receive a fresh DM and become the only person who can act on this step.`,
+        },
+      },
+      {
+        type: "input",
+        block_id: DELEGATE_USER_BLOCK_ID,
+        label: { type: "plain_text", text: "Delegate to" },
+        element: {
+          type: "users_select",
+          action_id: DELEGATE_USER_ACTION_ID,
+          placeholder: { type: "plain_text", text: "Pick a user" },
         },
       },
     ],

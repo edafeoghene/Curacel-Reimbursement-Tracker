@@ -26,16 +26,21 @@ import { fetchUserName, PAYMENT_STEP_SENTINEL, safeAudit } from "./events.js";
 import {
   approverDmAfterApprove,
   approverDmAfterClarify,
+  approverDmAfterDelegate,
   approverDmAfterReject,
   approverDmBlocks,
   CLARIFY_QUESTION_ACTION_ID,
   CLARIFY_QUESTION_BLOCK_ID,
   clarificationQuestionModal,
+  DELEGATE_USER_ACTION_ID,
+  DELEGATE_USER_BLOCK_ID,
+  delegateUserPickerModal,
   financialManagerClarifyHintBlocks,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
   manualReviewDmBlocks,
   MODAL_CLARIFY_CALLBACK_ID,
+  MODAL_DELEGATE_CALLBACK_ID,
   MODAL_REJECT_CALLBACK_ID,
   REJECT_REASON_ACTION_ID,
   REJECT_REASON_BLOCK_ID,
@@ -954,6 +959,298 @@ function makeClarifyModalSubmitHandler({ config }: Deps) {
   };
 }
 
+// ---------- delegate (Phase 1.3) ----------
+
+/**
+ * Delegate button handler. Mirrors the reject/clarify buttons: re-authorize
+ * (only the current approver may delegate), open the user-picker modal.
+ * The modal-submit handler does the real work.
+ */
+function makeDelegateButtonHandler() {
+  return async ({
+    ack,
+    body,
+    client,
+    action,
+  }: {
+    ack: () => Promise<void>;
+    body: BlockAction;
+    client: WebClient;
+    action: ButtonAction;
+  }): Promise<void> => {
+    await ack();
+
+    const trackingId = action.value;
+    if (!trackingId) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] expense_delegate: missing tracking_id value",
+      );
+      return;
+    }
+
+    const clickerId = body.user.id;
+    const channelId = body.channel?.id ?? "";
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            `Ticket \`${trackingId}\` could not be found.`,
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (clickerId !== ticket.current_approver_user_id) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: clickerId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_delegate",
+          expected: ticket.current_approver_user_id,
+          got: clickerId,
+        },
+      });
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            "You are not the assigned approver for this ticket.",
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (!body.trigger_id) {
+      // eslint-disable-next-line no-console
+      console.warn("[interactivity] expense_delegate: missing trigger_id");
+      return;
+    }
+    try {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        view: delegateUserPickerModal(trackingId) as any,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[interactivity] views.open(delegate modal) failed:", err);
+    }
+  };
+}
+
+/**
+ * Delegate modal submission handler. Re-fetches the ticket, re-authorizes,
+ * marks the existing PENDING approval row as DELEGATED (with the new
+ * approver in `delegated_to_user_id`), appends a fresh PENDING approval row
+ * for the chosen delegate, updates ticket.current_approver_user_id, edits
+ * the original approver's DM to "Delegated to <@new>", and DMs the new
+ * approver. State stays AWAITING_APPROVAL — delegation is not a state
+ * transition.
+ */
+function makeDelegateModalSubmitHandler() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (args: any): Promise<void> => {
+    const view = args.body.view;
+    const clickerId = args.body.user.id;
+    const trackingId: string = view.private_metadata ?? "";
+    const newApproverId: string =
+      view.state?.values?.[DELEGATE_USER_BLOCK_ID]?.[DELEGATE_USER_ACTION_ID]
+        ?.selected_user ?? "";
+
+    if (!trackingId || !newApproverId) {
+      await args.ack({
+        response_action: "errors",
+        errors: {
+          [DELEGATE_USER_BLOCK_ID]:
+            "Pick a user to delegate the approval to.",
+        },
+      });
+      return;
+    }
+
+    if (newApproverId === clickerId) {
+      await args.ack({
+        response_action: "errors",
+        errors: {
+          [DELEGATE_USER_BLOCK_ID]:
+            "You can't delegate the approval to yourself.",
+        },
+      });
+      return;
+    }
+
+    await args.ack();
+
+    const client: WebClient = args.client;
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[interactivity] delegate modal submit: ticket ${trackingId} not found`,
+      );
+      return;
+    }
+
+    if (clickerId !== ticket.current_approver_user_id) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: clickerId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_delegate_submit",
+          expected: ticket.current_approver_user_id,
+          got: clickerId,
+        },
+      });
+      return;
+    }
+
+    // Find the pending approval row for the current step (the one being
+    // delegated AWAY from).
+    const approvals = await listApprovalsForTicket(trackingId);
+    const pending = approvals.find(
+      (a) =>
+        a.step_number === ticket.current_step && a.decision === "PENDING",
+    );
+
+    const delegatedAt = new Date();
+    const delegatedAtIso = delegatedAt.toISOString();
+
+    // Step 1: flip the original PENDING row to DELEGATED. The
+    // `delegated_to_user_id` field on this row records who the approval
+    // was handed to.
+    if (pending) {
+      try {
+        await updateApprovalDecision(pending.approval_id, {
+          decision: "DELEGATED",
+          decided_at: delegatedAtIso,
+          comment: `delegated to <@${newApproverId}>`,
+          delegated_to_user_id: newApproverId,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[interactivity] updateApprovalDecision(DELEGATE) failed:",
+          err,
+        );
+      }
+    }
+
+    // Step 2: update ticket.current_approver_user_id. Status stays
+    // AWAITING_APPROVAL — delegation is not a state transition.
+    let updatedTicket: Ticket;
+    try {
+      updatedTicket = await updateTicket(trackingId, ticket.row_version, {
+        current_approver_user_id: newApproverId,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[interactivity] updateTicket(delegate) failed:",
+        err,
+      );
+      return;
+    }
+
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: clickerId,
+      event_type: AUDIT_EVENTS.DELEGATED,
+      details: {
+        step: ticket.current_step,
+        from: clickerId,
+        to: newApproverId,
+        decided_at: delegatedAtIso,
+      },
+    });
+
+    // Step 3: DM the new approver and append a fresh PENDING approval row.
+    let dm: { channel: string; ts: string };
+    try {
+      const { blocks, fallbackText } = approverDmBlocks(updatedTicket);
+      dm = await dmUser(client, newApproverId, blocks, fallbackText);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[interactivity] DM to delegate failed:",
+        err,
+      );
+      return;
+    }
+
+    try {
+      const newApproverName = await fetchUserName(client, newApproverId);
+      await appendApproval({
+        approval_id: uuidv4(),
+        tracking_id: trackingId,
+        step_number: updatedTicket.current_step,
+        approver_user_id: newApproverId,
+        approver_name: newApproverName,
+        decision: "PENDING",
+        decided_at: null,
+        // delegated_to_user_id on the NEW row records provenance: this row
+        // is the result of a delegation FROM clickerId. The old row's
+        // delegated_to_user_id points the other way (TO newApproverId).
+        delegated_to_user_id: clickerId,
+        comment: `delegated from <@${clickerId}>`,
+        dm_channel_id: dm.channel,
+        message_ts: dm.ts,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[interactivity] appendApproval(delegate) failed:",
+        err,
+      );
+      // The DM was sent — without a row we can't track button clicks
+      // cleanly. Leave the warning; manual recovery is possible.
+    }
+
+    // Step 4: edit the original approver's DM to remove buttons and show
+    // "Delegated to <@new>".
+    if (pending?.dm_channel_id && pending?.message_ts) {
+      try {
+        const fromName = pending.approver_name ?? `<@${clickerId}>`;
+        const { blocks, fallbackText } = approverDmAfterDelegate(
+          updatedTicket,
+          delegatedAt,
+          fromName,
+          newApproverId,
+        );
+        await updateMessage(
+          client,
+          pending.dm_channel_id,
+          pending.message_ts,
+          blocks,
+          fallbackText,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[interactivity] approver DM update (delegate) failed:",
+          err,
+        );
+      }
+    }
+  };
+}
+
 // ---------- mark as paid ----------
 
 function makeMarkPaidHandler({ config }: Deps) {
@@ -1276,6 +1573,8 @@ export function registerInteractivity(app: App, deps: Deps): void {
   const rejectModalSubmitHandler = makeRejectModalSubmitHandler();
   const clarifyButtonHandler = makeClarifyButtonHandler();
   const clarifyModalSubmitHandler = makeClarifyModalSubmitHandler(deps);
+  const delegateButtonHandler = makeDelegateButtonHandler();
+  const delegateModalSubmitHandler = makeDelegateModalSubmitHandler();
   const markPaidHandler = makeMarkPaidHandler(deps);
   const fileShareHandler = makeFileShareHandler(deps);
 
@@ -1337,6 +1636,28 @@ export function registerInteractivity(app: App, deps: Deps): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async (args: any) => {
       await clarifyModalSubmitHandler(args);
+    },
+  );
+
+  app.action(
+    "expense_delegate",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (args: any) => {
+      const action = args.action as ButtonAction;
+      await delegateButtonHandler({
+        ack: args.ack,
+        body: args.body as BlockAction,
+        client: args.client as WebClient,
+        action,
+      });
+    },
+  );
+
+  app.view(
+    MODAL_DELEGATE_CALLBACK_ID,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (args: any) => {
+      await delegateModalSubmitHandler(args);
     },
   );
 

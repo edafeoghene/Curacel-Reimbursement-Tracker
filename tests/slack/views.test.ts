@@ -2,20 +2,26 @@ import { describe, expect, it } from "vitest";
 import {
   ACTION_APPROVE,
   ACTION_CLARIFY,
+  ACTION_DELEGATE,
   ACTION_MARK_PAID,
   ACTION_REJECT,
   approverDmAfterApprove,
   approverDmAfterClarify,
+  approverDmAfterDelegate,
   approverDmAfterReject,
   approverDmBlocks,
   CLARIFY_QUESTION_ACTION_ID,
   CLARIFY_QUESTION_BLOCK_ID,
   clarificationQuestionModal,
+  DELEGATE_USER_ACTION_ID,
+  DELEGATE_USER_BLOCK_ID,
+  delegateUserPickerModal,
   financialManagerClarifyHintBlocks,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
   manualReviewDmBlocks,
   MODAL_CLARIFY_CALLBACK_ID,
+  MODAL_DELEGATE_CALLBACK_ID,
   MODAL_REJECT_CALLBACK_ID,
   REJECT_REASON_ACTION_ID,
   REJECT_REASON_BLOCK_ID,
@@ -107,6 +113,20 @@ describe("approverDmBlocks", () => {
     // Neutral — no style field.
     expect(clarifyBtn?.style).toBeUndefined();
     expect(clarifyBtn?.value).toBe(ticket.tracking_id);
+  });
+
+  it("includes a neutral Delegate button", () => {
+    const ticket = makeTicket();
+    const { blocks } = approverDmBlocks(ticket);
+    const actions = findActionsBlock(blocks) as {
+      elements: Array<Record<string, unknown>>;
+    };
+    const delegateBtn = actions.elements.find(
+      (e) => e.action_id === ACTION_DELEGATE,
+    );
+    expect(delegateBtn).toBeDefined();
+    expect(delegateBtn?.style).toBeUndefined();
+    expect(delegateBtn?.value).toBe(ticket.tracking_id);
   });
 });
 
@@ -383,5 +403,56 @@ describe("manualReviewDmBlocks", () => {
         /timeout/i.test((b as { text: { text: string } }).text.text),
     );
     expect(reasonBlock).toBeDefined();
+  });
+});
+
+describe("approverDmAfterDelegate", () => {
+  it("drops actions and shows the delegated context with both names", () => {
+    const t = makeTicket();
+    const { blocks, fallbackText } = approverDmAfterDelegate(
+      t,
+      new Date("2026-05-09T14:32:00Z"),
+      "Stephan",
+      "U_PATRICK",
+    );
+    expect(findActionsBlock(blocks)).toBeUndefined();
+    expect(fallbackText).toMatch(/Delegated/);
+    const ctx = blocks
+      .filter((b) => b.type === "context")
+      .find((c) => {
+        const els =
+          (c as { elements: Array<{ text?: string }> }).elements ?? [];
+        return els.some(
+          (e) => typeof e.text === "string" && /Delegated/.test(e.text),
+        );
+      }) as { elements: Array<{ text: string }> } | undefined;
+    expect(ctx).toBeDefined();
+    expect(ctx!.elements[0]!.text).toContain("<@U_PATRICK>");
+    expect(ctx!.elements[0]!.text).toContain("Stephan");
+  });
+});
+
+describe("delegateUserPickerModal", () => {
+  it("returns a modal view with a users_select element and the tracking_id in private_metadata", () => {
+    const trackingId = "EXP-2605-A7K2";
+    const view = delegateUserPickerModal(trackingId) as {
+      type: string;
+      callback_id: string;
+      private_metadata: string;
+      blocks: Array<Record<string, unknown>>;
+      submit?: { type: string; text: string };
+      close?: { type: string; text: string };
+    };
+    expect(view.type).toBe("modal");
+    expect(view.callback_id).toBe(MODAL_DELEGATE_CALLBACK_ID);
+    expect(view.private_metadata).toBe(trackingId);
+    expect(view.submit?.text).toBeTruthy();
+
+    const inputBlock = view.blocks.find(
+      (b) => b.type === "input" && b.block_id === DELEGATE_USER_BLOCK_ID,
+    ) as { element: Record<string, unknown> } | undefined;
+    expect(inputBlock).toBeDefined();
+    expect(inputBlock?.element.action_id).toBe(DELEGATE_USER_ACTION_ID);
+    expect(inputBlock?.element.type).toBe("users_select");
   });
 });
