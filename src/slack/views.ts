@@ -166,7 +166,24 @@ export function approverDmAfterApprove(
 
 // ---------- financial manager DM ----------
 
-export function financialManagerDmBlocks(ticket: Ticket): {
+function approvedByContext(approverUserIds: string[]): Block | null {
+  if (approverUserIds.length === 0) return null;
+  const mentions = approverUserIds.map((id) => `<@${id}>`).join(", ");
+  return {
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `:white_check_mark: Approved by: ${mentions}`,
+      },
+    ],
+  };
+}
+
+export function financialManagerDmBlocks(
+  ticket: Ticket,
+  approverUserIds: string[] = [],
+): {
   blocks: Block[];
   fallbackText: string;
 } {
@@ -177,6 +194,9 @@ export function financialManagerDmBlocks(ticket: Ticket): {
   ];
   const ctx = receiptContextBlock(ticket);
   if (ctx) blocks.push(ctx);
+
+  const approvedBy = approvedByContext(approverUserIds);
+  if (approvedBy) blocks.push(approvedBy);
 
   blocks.push(divider());
   blocks.push({
@@ -200,7 +220,10 @@ export function financialManagerDmBlocks(ticket: Ticket): {
   return { blocks, fallbackText };
 }
 
-export function financialManagerDmAfterMarkPaid(ticket: Ticket): {
+export function financialManagerDmAfterMarkPaid(
+  ticket: Ticket,
+  approverUserIds: string[] = [],
+): {
   blocks: Block[];
   fallbackText: string;
 } {
@@ -211,6 +234,9 @@ export function financialManagerDmAfterMarkPaid(ticket: Ticket): {
   ];
   const ctx = receiptContextBlock(ticket);
   if (ctx) blocks.push(ctx);
+
+  const approvedBy = approvedByContext(approverUserIds);
+  if (approvedBy) blocks.push(approvedBy);
 
   blocks.push(divider());
   blocks.push({

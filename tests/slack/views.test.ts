@@ -191,6 +191,40 @@ describe("financialManagerDmBlocks", () => {
     expect(btn.action_id).toBe(ACTION_MARK_PAID);
     expect(btn.value).toBe(t.tracking_id);
   });
+
+  it("renders no Approved-by line when the approvers list is empty", () => {
+    const t = makeTicket({ status: "APPROVED" });
+    const { blocks } = financialManagerDmBlocks(t, []);
+    const hasApprovedBy = blocks.some(
+      (b) =>
+        b.type === "context" &&
+        Array.isArray((b as { elements?: unknown[] }).elements) &&
+        ((b as { elements: Array<{ text?: string }> }).elements[0]?.text ?? "")
+          .toString()
+          .includes("Approved by"),
+    );
+    expect(hasApprovedBy).toBe(false);
+  });
+
+  it("tags every approver passed in, in order", () => {
+    const t = makeTicket({ status: "APPROVED" });
+    const { blocks } = financialManagerDmBlocks(t, ["U_PATRICK", "U_TINUS"]);
+    const ctx = blocks.find(
+      (b) =>
+        b.type === "context" &&
+        Array.isArray((b as { elements?: unknown[] }).elements) &&
+        ((b as { elements: Array<{ text?: string }> }).elements[0]?.text ?? "")
+          .toString()
+          .includes("Approved by"),
+    ) as { elements: Array<{ text: string }> } | undefined;
+    expect(ctx).toBeDefined();
+    expect(ctx!.elements[0]!.text).toContain("<@U_PATRICK>");
+    expect(ctx!.elements[0]!.text).toContain("<@U_TINUS>");
+    // ordering preserved (first listed appears first in the rendered string)
+    expect(ctx!.elements[0]!.text.indexOf("<@U_PATRICK>")).toBeLessThan(
+      ctx!.elements[0]!.text.indexOf("<@U_TINUS>"),
+    );
+  });
 });
 
 describe("financialManagerDmAfterMarkPaid", () => {
@@ -206,6 +240,21 @@ describe("financialManagerDmAfterMarkPaid", () => {
         /proof of payment/i.test((b as { text: { text: string } }).text.text),
     );
     expect(hasPrompt).toBe(true);
+  });
+
+  it("preserves the Approved-by line after Mark as Paid", () => {
+    const t = makeTicket({ status: "AWAITING_PAYMENT" });
+    const { blocks } = financialManagerDmAfterMarkPaid(t, ["U_PATRICK"]);
+    const ctx = blocks.find(
+      (b) =>
+        b.type === "context" &&
+        Array.isArray((b as { elements?: unknown[] }).elements) &&
+        ((b as { elements: Array<{ text?: string }> }).elements[0]?.text ?? "")
+          .toString()
+          .includes("Approved by"),
+    ) as { elements: Array<{ text: string }> } | undefined;
+    expect(ctx).toBeDefined();
+    expect(ctx!.elements[0]!.text).toContain("<@U_PATRICK>");
   });
 });
 

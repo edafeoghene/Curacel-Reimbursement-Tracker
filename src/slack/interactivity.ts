@@ -40,6 +40,30 @@ interface Deps {
   config: Config;
 }
 
+/**
+ * Build the ordered, deduped list of approver Slack IDs to surface on the FM
+ * DM. Walks the approvals for this ticket: non-sentinel rows that are
+ * APPROVED, ordered by step_number. Same person approving multiple steps is
+ * shown once (rare, but possible during single-person testing).
+ */
+function collectStepApproverIds(approvals: Approval[]): string[] {
+  const sorted = approvals
+    .filter(
+      (a) =>
+        a.step_number !== PAYMENT_STEP_SENTINEL && a.decision === "APPROVED",
+    )
+    .sort((a, b) => a.step_number - b.step_number);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const a of sorted) {
+    if (a.approver_user_id && !seen.has(a.approver_user_id)) {
+      out.push(a.approver_user_id);
+      seen.add(a.approver_user_id);
+    }
+  }
+  return out;
+}
+
 // ---------- approve ----------
 
 function makeApproveHandler({ config }: Deps) {
@@ -342,8 +366,25 @@ function makeApproveHandler({ config }: Deps) {
     }
 
     // Final approve: DM the financial manager with "Mark as Paid".
+    // Re-fetch approvals so the just-approved current step is included.
+    let approverIdsForFm: string[] = [];
     try {
-      const { blocks, fallbackText } = financialManagerDmBlocks(updatedTicket);
+      const fresh = await listApprovalsForTicket(trackingId);
+      approverIdsForFm = collectStepApproverIds(fresh);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] could not load approvals for FM DM tagging:",
+        err,
+      );
+      // Fall back to at least the current clicker so the FM sees who acted.
+      approverIdsForFm = [clickerId];
+    }
+    try {
+      const { blocks, fallbackText } = financialManagerDmBlocks(
+        updatedTicket,
+        approverIdsForFm,
+      );
       const { channel: fmChannel, ts: fmTs } = await dmUser(
         client,
         config.FINANCIAL_MANAGER_USER_ID,
@@ -740,11 +781,28 @@ function makeMarkPaidHandler({ config }: Deps) {
       details: { event: "MARK_AS_PAID", from: ticket.status, to: result.next },
     });
 
-    // Edit the FM DM to remove the button + show the prompt.
+    // Load approvals once: used for both the FM DM rebuild (approver tags)
+    // and sentinel upkeep below.
+    let approvals: Approval[] = [];
+    try {
+      approvals = await listApprovalsForTicket(trackingId);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] listApprovalsForTicket(mark_paid) failed:",
+        err,
+      );
+    }
+    const approverIdsForFm = collectStepApproverIds(approvals);
+
+    // Edit the FM DM to remove the button + show the prompt (preserve the
+    // approver tags so the FM still sees who approved).
     if (channelId && messageTs) {
       try {
-        const { blocks, fallbackText } =
-          financialManagerDmAfterMarkPaid(updatedTicket);
+        const { blocks, fallbackText } = financialManagerDmAfterMarkPaid(
+          updatedTicket,
+          approverIdsForFm,
+        );
         await updateMessage(client, channelId, messageTs, blocks, fallbackText);
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -756,7 +814,6 @@ function makeMarkPaidHandler({ config }: Deps) {
     // approve flow already stored them this is a no-op; if for some reason
     // they're missing, top them up here.
     try {
-      const approvals = await listApprovalsForTicket(trackingId);
       const sentinel = approvals.find(
         (a) => a.step_number === PAYMENT_STEP_SENTINEL,
       );
