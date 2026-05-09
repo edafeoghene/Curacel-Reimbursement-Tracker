@@ -101,7 +101,10 @@ export interface Route {
 export type StateEvent =
   | { type: "CLASSIFIED"; confidence: number }
   | { type: "FIRST_DM_SENT" }
-  | { type: "APPROVE"; step: number; approver_user_id: string }
+  // is_final_step: caller (slack handler) computes whether this approval was
+  // the last step in the route chain. Pure state machine cannot know the
+  // chain length on its own, and a side-channel arg would muddy the API.
+  | { type: "APPROVE"; step: number; approver_user_id: string; is_final_step: boolean }
   | { type: "REJECT"; step: number; approver_user_id: string; reason: string }
   | { type: "CLARIFY"; step: number; approver_user_id: string; question: string }
   | { type: "RESUME_AFTER_CLARIFY" }
