@@ -440,10 +440,14 @@ function makeApproveHandler({ config }: Deps) {
 // ---------- reject (Phase 1.1) ----------
 
 /**
- * Reject button handler. Authorization is checked here AND again at modal
- * submission time, because the modal can stay open for minutes — by the
- * time the user submits, state may have shifted (e.g. delegation, terminal
- * status). Re-checking is cheap and structurally important.
+ * Reject button handler. Opens the reason modal IMMEDIATELY after ack —
+ * trigger_id is only valid for ~3 seconds, and a Sheets read on the way in
+ * (to verify ticket existence + authorize) routinely blew past that window.
+ *
+ * Authorization is enforced at modal-submit time (re-fetch + re-authorize),
+ * so the pre-flight check was a UX nicety, not a security gate. In practice
+ * approver DMs are 1-on-1, so the only person who CAN click the button is
+ * the assignee anyway.
  */
 function makeRejectButtonHandler() {
   return async ({
@@ -460,65 +464,14 @@ function makeRejectButtonHandler() {
     await ack();
 
     const trackingId = action.value;
-    if (!trackingId) {
+    if (!trackingId || !body.trigger_id) {
       // eslint-disable-next-line no-console
-      console.warn("[interactivity] expense_reject: missing tracking_id value");
+      console.warn(
+        "[interactivity] expense_reject: missing tracking_id or trigger_id",
+      );
       return;
     }
 
-    const clickerId = body.user.id;
-    const channelId = body.channel?.id ?? "";
-
-    const ticket = await getTicketByTrackingId(trackingId);
-    if (!ticket) {
-      try {
-        if (channelId) {
-          await postEphemeral(
-            client,
-            channelId,
-            clickerId,
-            `Ticket \`${trackingId}\` could not be found.`,
-          );
-        }
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    if (clickerId !== ticket.current_approver_user_id) {
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: clickerId,
-        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
-        details: {
-          action: "expense_reject",
-          expected: ticket.current_approver_user_id,
-          got: clickerId,
-        },
-      });
-      try {
-        if (channelId) {
-          await postEphemeral(
-            client,
-            channelId,
-            clickerId,
-            "You are not the assigned approver for this ticket.",
-          );
-        }
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    // Open the reason modal. trigger_id is short-lived (~3s) — opening
-    // immediately after ack is essential.
-    if (!body.trigger_id) {
-      // eslint-disable-next-line no-console
-      console.warn("[interactivity] expense_reject: missing trigger_id");
-      return;
-    }
     try {
       await client.views.open({
         trigger_id: body.trigger_id,
@@ -697,15 +650,16 @@ function makeRejectModalSubmitHandler({ config }: Deps) {
 // ---------- clarify (Phase 1.2) ----------
 
 /**
- * Clarify button handler. Mirrors the reject button: re-authorize, open the
- * question modal. The modal-submit handler does the real work.
+ * Clarify button handler. Same pattern as reject: open the modal IMMEDIATELY
+ * after ack so the trigger_id (~3s lifetime) doesn't expire. Submit handler
+ * re-fetches and re-authorizes.
  */
 function makeClarifyButtonHandler() {
   return async ({
     ack,
     body,
-    client,
     action,
+    client,
   }: {
     ack: () => Promise<void>;
     body: BlockAction;
@@ -715,63 +669,14 @@ function makeClarifyButtonHandler() {
     await ack();
 
     const trackingId = action.value;
-    if (!trackingId) {
+    if (!trackingId || !body.trigger_id) {
       // eslint-disable-next-line no-console
-      console.warn("[interactivity] expense_clarify: missing tracking_id value");
+      console.warn(
+        "[interactivity] expense_clarify: missing tracking_id or trigger_id",
+      );
       return;
     }
 
-    const clickerId = body.user.id;
-    const channelId = body.channel?.id ?? "";
-
-    const ticket = await getTicketByTrackingId(trackingId);
-    if (!ticket) {
-      try {
-        if (channelId) {
-          await postEphemeral(
-            client,
-            channelId,
-            clickerId,
-            `Ticket \`${trackingId}\` could not be found.`,
-          );
-        }
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    if (clickerId !== ticket.current_approver_user_id) {
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: clickerId,
-        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
-        details: {
-          action: "expense_clarify",
-          expected: ticket.current_approver_user_id,
-          got: clickerId,
-        },
-      });
-      try {
-        if (channelId) {
-          await postEphemeral(
-            client,
-            channelId,
-            clickerId,
-            "You are not the assigned approver for this ticket.",
-          );
-        }
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    if (!body.trigger_id) {
-      // eslint-disable-next-line no-console
-      console.warn("[interactivity] expense_clarify: missing trigger_id");
-      return;
-    }
     try {
       await client.views.open({
         trigger_id: body.trigger_id,
@@ -985,16 +890,16 @@ function makeClarifyModalSubmitHandler({ config }: Deps) {
 // ---------- delegate (Phase 1.3) ----------
 
 /**
- * Delegate button handler. Mirrors the reject/clarify buttons: re-authorize
- * (only the current approver may delegate), open the user-picker modal.
- * The modal-submit handler does the real work.
+ * Delegate button handler. Same pattern as reject/clarify: open the modal
+ * IMMEDIATELY after ack so the trigger_id (~3s lifetime) doesn't expire on
+ * a slow Sheets read. Submit handler re-fetches and re-authorizes.
  */
 function makeDelegateButtonHandler() {
   return async ({
     ack,
     body,
-    client,
     action,
+    client,
   }: {
     ack: () => Promise<void>;
     body: BlockAction;
@@ -1004,65 +909,14 @@ function makeDelegateButtonHandler() {
     await ack();
 
     const trackingId = action.value;
-    if (!trackingId) {
+    if (!trackingId || !body.trigger_id) {
       // eslint-disable-next-line no-console
       console.warn(
-        "[interactivity] expense_delegate: missing tracking_id value",
+        "[interactivity] expense_delegate: missing tracking_id or trigger_id",
       );
       return;
     }
 
-    const clickerId = body.user.id;
-    const channelId = body.channel?.id ?? "";
-
-    const ticket = await getTicketByTrackingId(trackingId);
-    if (!ticket) {
-      try {
-        if (channelId) {
-          await postEphemeral(
-            client,
-            channelId,
-            clickerId,
-            `Ticket \`${trackingId}\` could not be found.`,
-          );
-        }
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    if (clickerId !== ticket.current_approver_user_id) {
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: clickerId,
-        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
-        details: {
-          action: "expense_delegate",
-          expected: ticket.current_approver_user_id,
-          got: clickerId,
-        },
-      });
-      try {
-        if (channelId) {
-          await postEphemeral(
-            client,
-            channelId,
-            clickerId,
-            "You are not the assigned approver for this ticket.",
-          );
-        }
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    if (!body.trigger_id) {
-      // eslint-disable-next-line no-console
-      console.warn("[interactivity] expense_delegate: missing trigger_id");
-      return;
-    }
     try {
       await client.views.open({
         trigger_id: body.trigger_id,
