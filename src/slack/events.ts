@@ -34,6 +34,7 @@ import { v4 as uuidv4 } from "uuid";
 
 import { downloadSlackFile, isPdf, isSupportedImage } from "./files.js";
 import { extractPdfPage1AsImage } from "../llm/pdf.js";
+import { postFeedLine } from "./feed.js";
 import { ackInThread, dmUser, postEphemeral } from "./messaging.js";
 import { approverDmBlocks, manualReviewDmBlocks } from "./views.js";
 
@@ -984,6 +985,12 @@ async function processOneItem(
     }
   }
 
+  await postFeedLine(
+    client,
+    config,
+    `:inbox_tray: New: \`${trackingId}\` from <@${userId}> — ${item.currency} ${formatAmount(item.amount)} (${item.category}) → <@${approverId}>`,
+  );
+
   return {
     kind: "ok",
     trackingId,
@@ -1080,6 +1087,12 @@ async function routeToManualReview(
     // eslint-disable-next-line no-console
     console.error("[events] manual-review DM failed:", err);
   }
+
+  await postFeedLine(
+    client,
+    config,
+    `:mag: Manual review: \`${trackingId}\` — ${reason}`,
+  );
 
   return trackingId;
 }

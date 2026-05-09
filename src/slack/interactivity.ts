@@ -21,6 +21,7 @@ import { getTicketByTrackingId, listNonTerminalTickets, updateTicket } from "../
 import { transition } from "../state/machine.js";
 import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
 
+import { postFeedLine } from "./feed.js";
 import { dmUser, postEphemeral, updateMessage } from "./messaging.js";
 import { fetchUserName, PAYMENT_STEP_SENTINEL, safeAudit } from "./events.js";
 import {
@@ -332,6 +333,11 @@ function makeApproveHandler({ config }: Deps) {
 
     if (nextApproverId) {
       // Non-final: DM the next approver and append a fresh approval row.
+      await postFeedLine(
+        client,
+        config,
+        `:white_check_mark: Step ${ticket.current_step} approved: \`${trackingId}\` by <@${clickerId}> → forwarding to <@${nextApproverId}>`,
+      );
       try {
         const { blocks, fallbackText } = approverDmBlocks(updatedTicket);
         const dm = await dmUser(client, nextApproverId, blocks, fallbackText);
@@ -377,6 +383,11 @@ function makeApproveHandler({ config }: Deps) {
     }
 
     // Final approve: DM the financial manager with "Mark as Paid".
+    await postFeedLine(
+      client,
+      config,
+      `:white_check_mark: Approved: \`${trackingId}\` by <@${clickerId}> — awaiting payment`,
+    );
     // Re-fetch approvals so the just-approved current step is included.
     let approverIdsForFm: string[] = [];
     try {
@@ -527,7 +538,7 @@ function makeRejectButtonHandler() {
  * approver DM to remove buttons + show the rejection, and posts the
  * rejection notice in the requester's source thread.
  */
-function makeRejectModalSubmitHandler() {
+function makeRejectModalSubmitHandler({ config }: Deps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return async (args: any): Promise<void> => {
     await args.ack();
@@ -674,6 +685,12 @@ function makeRejectModalSubmitHandler() {
         err,
       );
     }
+
+    await postFeedLine(
+      client,
+      config,
+      `:x: Rejected: \`${trackingId}\` by <@${clickerId}> — ${reason}`,
+    );
   };
 }
 
@@ -956,6 +973,12 @@ function makeClarifyModalSubmitHandler({ config }: Deps) {
         err,
       );
     }
+
+    await postFeedLine(
+      client,
+      config,
+      `:question: Clarification: \`${trackingId}\` by <@${clickerId}> — ${question}`,
+    );
   };
 }
 
@@ -1062,7 +1085,7 @@ function makeDelegateButtonHandler() {
  * approver. State stays AWAITING_APPROVAL — delegation is not a state
  * transition.
  */
-function makeDelegateModalSubmitHandler() {
+function makeDelegateModalSubmitHandler({ config }: Deps) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return async (args: any): Promise<void> => {
     const view = args.body.view;
@@ -1248,6 +1271,12 @@ function makeDelegateModalSubmitHandler() {
         );
       }
     }
+
+    await postFeedLine(
+      client,
+      config,
+      `:busts_in_silhouette: Delegated: \`${trackingId}\` by <@${clickerId}> → <@${newApproverId}> at step ${ticket.current_step}`,
+    );
   };
 }
 
@@ -1412,6 +1441,12 @@ function makeMarkPaidHandler({ config }: Deps) {
       // eslint-disable-next-line no-console
       console.warn("[interactivity] sentinel approval upkeep failed:", err);
     }
+
+    await postFeedLine(
+      client,
+      config,
+      `:moneybag: Marked paid: \`${trackingId}\` by <@${clickerId}> — awaiting proof`,
+    );
   };
 }
 
@@ -1560,6 +1595,12 @@ function makeFileShareHandler({ config }: Deps) {
         err,
       );
     }
+
+    await postFeedLine(
+      client,
+      config,
+      `:dollar: Paid: \`${updated.tracking_id}\` (proof attached)`,
+    );
   };
 }
 
@@ -1570,11 +1611,11 @@ export function registerInteractivity(app: App, deps: Deps): void {
   // shape Bolt provides. We accept BlockAction with a ButtonAction element.
   const approveHandler = makeApproveHandler(deps);
   const rejectButtonHandler = makeRejectButtonHandler();
-  const rejectModalSubmitHandler = makeRejectModalSubmitHandler();
+  const rejectModalSubmitHandler = makeRejectModalSubmitHandler(deps);
   const clarifyButtonHandler = makeClarifyButtonHandler();
   const clarifyModalSubmitHandler = makeClarifyModalSubmitHandler(deps);
   const delegateButtonHandler = makeDelegateButtonHandler();
-  const delegateModalSubmitHandler = makeDelegateModalSubmitHandler();
+  const delegateModalSubmitHandler = makeDelegateModalSubmitHandler(deps);
   const markPaidHandler = makeMarkPaidHandler(deps);
   const fileShareHandler = makeFileShareHandler(deps);
 

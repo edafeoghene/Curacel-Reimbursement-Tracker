@@ -18,6 +18,7 @@ import { transition } from "../state/machine.js";
 import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
 
 import { fetchUserName, safeAudit } from "./events.js";
+import { postFeedLine } from "./feed.js";
 import { dmUser, updateMessage } from "./messaging.js";
 import { approverDmBlocks, dmAfterCancel } from "./views.js";
 
@@ -194,6 +195,12 @@ function makeExpenseResumeHandler({ config }: Deps) {
       },
     });
 
+    await postFeedLine(
+      client,
+      config,
+      `:repeat: Resumed: \`${trackingId}\` by <@${userId}> → re-DM'd <@${approverId}> at step ${updatedTicket.current_step}`,
+    );
+
     await respond({
       response_type: "ephemeral",
       text: `Resumed \`${trackingId}\` — DM'd <@${approverId}> at step ${updatedTicket.current_step}.`,
@@ -363,6 +370,12 @@ function makeExpenseCancelHandler({ config }: Deps) {
       // eslint-disable-next-line no-console
       console.warn("[slash] thread notify (cancel) failed:", err);
     }
+
+    await postFeedLine(
+      client,
+      config,
+      `:no_entry: Cancelled: \`${trackingId}\` by <@${userId}>`,
+    );
 
     await respond({
       response_type: "ephemeral",
