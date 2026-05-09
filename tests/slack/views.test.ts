@@ -1,14 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   ACTION_APPROVE,
+  ACTION_CLARIFY,
   ACTION_MARK_PAID,
   ACTION_REJECT,
   approverDmAfterApprove,
+  approverDmAfterClarify,
   approverDmAfterReject,
   approverDmBlocks,
+  CLARIFY_QUESTION_ACTION_ID,
+  CLARIFY_QUESTION_BLOCK_ID,
+  clarificationQuestionModal,
+  financialManagerClarifyHintBlocks,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
   manualReviewDmBlocks,
+  MODAL_CLARIFY_CALLBACK_ID,
   MODAL_REJECT_CALLBACK_ID,
   REJECT_REASON_ACTION_ID,
   REJECT_REASON_BLOCK_ID,
@@ -86,6 +93,21 @@ describe("approverDmBlocks", () => {
     expect(rejectBtn?.style).toBe("danger");
     expect(rejectBtn?.value).toBe(ticket.tracking_id);
   });
+
+  it("includes a neutral Clarify button alongside Approve and Reject", () => {
+    const ticket = makeTicket();
+    const { blocks } = approverDmBlocks(ticket);
+    const actions = findActionsBlock(blocks) as {
+      elements: Array<Record<string, unknown>>;
+    };
+    const clarifyBtn = actions.elements.find(
+      (e) => e.action_id === ACTION_CLARIFY,
+    );
+    expect(clarifyBtn).toBeDefined();
+    // Neutral — no style field.
+    expect(clarifyBtn?.style).toBeUndefined();
+    expect(clarifyBtn?.value).toBe(ticket.tracking_id);
+  });
 });
 
 describe("approverDmAfterReject", () => {
@@ -155,6 +177,97 @@ describe("rejectionReasonModal", () => {
         /EXP-2605-XYZW/.test((b as { text: { text: string } }).text.text),
     );
     expect(hasIdInCopy).toBe(true);
+  });
+});
+
+describe("approverDmAfterClarify", () => {
+  it("drops actions, shows the awaiting-clarification context and the question", () => {
+    const t = makeTicket();
+    const question = "Who is this laptop for?";
+    const { blocks, fallbackText } = approverDmAfterClarify(
+      t,
+      new Date("2026-05-09T14:32:00Z"),
+      "Stephan",
+      question,
+    );
+    expect(findActionsBlock(blocks)).toBeUndefined();
+    expect(fallbackText).toMatch(/clarification/i);
+
+    const allContexts = blocks.filter((b) => b.type === "context");
+    const awaitingCtx = allContexts.find((c) => {
+      const els = (c as { elements: Array<{ text?: string }> }).elements ?? [];
+      return els.some(
+        (e) =>
+          typeof e.text === "string" && /Awaiting clarification/.test(e.text),
+      );
+    });
+    expect(awaitingCtx).toBeDefined();
+
+    const hasQuestion = blocks.some(
+      (b) =>
+        b.type === "section" &&
+        typeof (b as { text?: { text?: string } }).text?.text === "string" &&
+        new RegExp(question).test((b as { text: { text: string } }).text.text),
+    );
+    expect(hasQuestion).toBe(true);
+  });
+});
+
+describe("clarificationQuestionModal", () => {
+  it("returns a modal view carrying tracking_id in private_metadata and a multiline question input", () => {
+    const trackingId = "EXP-2605-A7K2";
+    const view = clarificationQuestionModal(trackingId) as {
+      type: string;
+      callback_id: string;
+      private_metadata: string;
+      blocks: Array<Record<string, unknown>>;
+      submit?: { type: string; text: string };
+      close?: { type: string; text: string };
+    };
+    expect(view.type).toBe("modal");
+    expect(view.callback_id).toBe(MODAL_CLARIFY_CALLBACK_ID);
+    expect(view.private_metadata).toBe(trackingId);
+    expect(view.submit?.text).toBeTruthy();
+    expect(view.close?.text).toBeTruthy();
+
+    const inputBlock = view.blocks.find(
+      (b) => b.type === "input" && b.block_id === CLARIFY_QUESTION_BLOCK_ID,
+    ) as { element: Record<string, unknown> } | undefined;
+    expect(inputBlock).toBeDefined();
+    expect(inputBlock?.element.action_id).toBe(CLARIFY_QUESTION_ACTION_ID);
+    expect(inputBlock?.element.type).toBe("plain_text_input");
+    expect(inputBlock?.element.multiline).toBe(true);
+  });
+
+  it("references the /expense-resume command in the modal copy so the approver knows how it's resumed", () => {
+    const view = clarificationQuestionModal("EXP-2605-XYZW") as {
+      blocks: Array<Record<string, unknown>>;
+    };
+    const hasResumeHint = view.blocks.some(
+      (b) =>
+        b.type === "section" &&
+        typeof (b as { text?: { text?: string } }).text?.text === "string" &&
+        /\/expense-resume/.test((b as { text: { text: string } }).text.text),
+    );
+    expect(hasResumeHint).toBe(true);
+  });
+});
+
+describe("financialManagerClarifyHintBlocks", () => {
+  it("includes the asking approver, the question, and the resume command", () => {
+    const t = makeTicket({ status: "NEEDS_CLARIFICATION" });
+    const { blocks, fallbackText } = financialManagerClarifyHintBlocks(
+      t,
+      "U_PATRICK",
+      "Who is this for?",
+    );
+    expect(fallbackText).toMatch(t.tracking_id);
+    const concatText = blocks
+      .map((b) => JSON.stringify(b))
+      .join("\n");
+    expect(concatText).toContain("<@U_PATRICK>");
+    expect(concatText).toContain("Who is this for?");
+    expect(concatText).toContain(`/expense-resume ${t.tracking_id}`);
   });
 });
 

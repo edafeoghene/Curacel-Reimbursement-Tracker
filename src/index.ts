@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   // Handlers.
   registerMessageHandler(app, { config });
   registerInteractivity(app, { config });
-  registerSlashCommands(app);
+  registerSlashCommands(app, { config });
 
   // Start.
   await app.start();

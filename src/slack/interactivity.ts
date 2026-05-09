@@ -25,11 +25,17 @@ import { dmUser, postEphemeral, updateMessage } from "./messaging.js";
 import { fetchUserName, PAYMENT_STEP_SENTINEL, safeAudit } from "./events.js";
 import {
   approverDmAfterApprove,
+  approverDmAfterClarify,
   approverDmAfterReject,
   approverDmBlocks,
+  CLARIFY_QUESTION_ACTION_ID,
+  CLARIFY_QUESTION_BLOCK_ID,
+  clarificationQuestionModal,
+  financialManagerClarifyHintBlocks,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
   manualReviewDmBlocks,
+  MODAL_CLARIFY_CALLBACK_ID,
   MODAL_REJECT_CALLBACK_ID,
   REJECT_REASON_ACTION_ID,
   REJECT_REASON_BLOCK_ID,
@@ -666,6 +672,288 @@ function makeRejectModalSubmitHandler() {
   };
 }
 
+// ---------- clarify (Phase 1.2) ----------
+
+/**
+ * Clarify button handler. Mirrors the reject button: re-authorize, open the
+ * question modal. The modal-submit handler does the real work.
+ */
+function makeClarifyButtonHandler() {
+  return async ({
+    ack,
+    body,
+    client,
+    action,
+  }: {
+    ack: () => Promise<void>;
+    body: BlockAction;
+    client: WebClient;
+    action: ButtonAction;
+  }): Promise<void> => {
+    await ack();
+
+    const trackingId = action.value;
+    if (!trackingId) {
+      // eslint-disable-next-line no-console
+      console.warn("[interactivity] expense_clarify: missing tracking_id value");
+      return;
+    }
+
+    const clickerId = body.user.id;
+    const channelId = body.channel?.id ?? "";
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            `Ticket \`${trackingId}\` could not be found.`,
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (clickerId !== ticket.current_approver_user_id) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: clickerId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_clarify",
+          expected: ticket.current_approver_user_id,
+          got: clickerId,
+        },
+      });
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            "You are not the assigned approver for this ticket.",
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (!body.trigger_id) {
+      // eslint-disable-next-line no-console
+      console.warn("[interactivity] expense_clarify: missing trigger_id");
+      return;
+    }
+    try {
+      await client.views.open({
+        trigger_id: body.trigger_id,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        view: clarificationQuestionModal(trackingId) as any,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[interactivity] views.open(clarify modal) failed:", err);
+    }
+  };
+}
+
+/**
+ * Clarify modal submission handler. Re-fetches the ticket, re-authorizes,
+ * runs the state machine (CLARIFY → NEEDS_CLARIFICATION), updates the
+ * approval row to CLARIFICATION_REQUESTED with the question as comment,
+ * edits the approver DM to show the question, posts in the requester's
+ * source thread tagging them, and DMs the financial manager with a
+ * `/expense-resume` hint.
+ */
+function makeClarifyModalSubmitHandler({ config }: Deps) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (args: any): Promise<void> => {
+    await args.ack();
+
+    const view = args.body.view;
+    const clickerId = args.body.user.id;
+    const trackingId: string = view.private_metadata ?? "";
+    const questionRaw: string =
+      view.state?.values?.[CLARIFY_QUESTION_BLOCK_ID]?.[
+        CLARIFY_QUESTION_ACTION_ID
+      ]?.value ?? "";
+    const question = questionRaw.trim();
+
+    if (!trackingId || !question) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] clarify modal submit: missing tracking_id or question",
+      );
+      return;
+    }
+
+    const client: WebClient = args.client;
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[interactivity] clarify modal submit: ticket ${trackingId} not found`,
+      );
+      return;
+    }
+
+    if (clickerId !== ticket.current_approver_user_id) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: clickerId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_clarify_submit",
+          expected: ticket.current_approver_user_id,
+          got: clickerId,
+        },
+      });
+      return;
+    }
+
+    const result = transition(ticket, {
+      type: "CLARIFY",
+      step: ticket.current_step,
+      approver_user_id: clickerId,
+      question,
+    });
+    if (!result.ok) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[interactivity] expense_clarify illegal: ${result.error}`,
+      );
+      return;
+    }
+
+    // Find the pending approval row for the current step.
+    const approvals = await listApprovalsForTicket(trackingId);
+    const pending = approvals.find(
+      (a) =>
+        a.step_number === ticket.current_step && a.decision === "PENDING",
+    );
+
+    const askedAt = new Date();
+    const askedAtIso = askedAt.toISOString();
+
+    if (pending) {
+      try {
+        await updateApprovalDecision(pending.approval_id, {
+          decision: "CLARIFICATION_REQUESTED",
+          decided_at: askedAtIso,
+          comment: question,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[interactivity] updateApprovalDecision(CLARIFY) failed:",
+          err,
+        );
+      }
+    }
+
+    let updatedTicket: Ticket;
+    try {
+      updatedTicket = await updateTicket(trackingId, ticket.row_version, {
+        status: result.next,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[interactivity] updateTicket(NEEDS_CLARIFICATION) failed:",
+        err,
+      );
+      return;
+    }
+
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: clickerId,
+      event_type: AUDIT_EVENTS.CLARIFICATION_REQUESTED,
+      details: { step: ticket.current_step, question, asked_at: askedAtIso },
+    });
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: clickerId,
+      event_type: AUDIT_EVENTS.STATE_TRANSITION,
+      details: {
+        event: "CLARIFY",
+        from: ticket.status,
+        to: result.next,
+        question,
+      },
+    });
+
+    // Edit the approver DM to remove buttons and surface the question.
+    if (pending?.dm_channel_id && pending?.message_ts) {
+      try {
+        const approverName = pending.approver_name ?? `<@${clickerId}>`;
+        const { blocks, fallbackText } = approverDmAfterClarify(
+          updatedTicket,
+          askedAt,
+          approverName,
+          question,
+        );
+        await updateMessage(
+          client,
+          pending.dm_channel_id,
+          pending.message_ts,
+          blocks,
+          fallbackText,
+        );
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[interactivity] approver DM update (clarify) failed:",
+          err,
+        );
+      }
+    }
+
+    // Notify the requester in the source thread.
+    try {
+      await client.chat.postMessage({
+        channel: updatedTicket.source_channel_id,
+        thread_ts: updatedTicket.source_message_ts,
+        text: `Hi <@${updatedTicket.requester_user_id}>, <@${clickerId}> needs more info on \`${updatedTicket.tracking_id}\`.\n*Question:* ${question}\n\nReply here when you can. The financial manager will resume the approval once you answer.`,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] thread notify (clarify) failed:",
+        err,
+      );
+    }
+
+    // DM the financial manager with the resume hint.
+    try {
+      const { blocks, fallbackText } = financialManagerClarifyHintBlocks(
+        updatedTicket,
+        clickerId,
+        question,
+      );
+      await dmUser(
+        client,
+        config.FINANCIAL_MANAGER_USER_ID,
+        blocks,
+        fallbackText,
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] FM clarify-hint DM failed:",
+        err,
+      );
+    }
+  };
+}
+
 // ---------- mark as paid ----------
 
 function makeMarkPaidHandler({ config }: Deps) {
@@ -986,6 +1274,8 @@ export function registerInteractivity(app: App, deps: Deps): void {
   const approveHandler = makeApproveHandler(deps);
   const rejectButtonHandler = makeRejectButtonHandler();
   const rejectModalSubmitHandler = makeRejectModalSubmitHandler();
+  const clarifyButtonHandler = makeClarifyButtonHandler();
+  const clarifyModalSubmitHandler = makeClarifyModalSubmitHandler(deps);
   const markPaidHandler = makeMarkPaidHandler(deps);
   const fileShareHandler = makeFileShareHandler(deps);
 
@@ -1025,6 +1315,28 @@ export function registerInteractivity(app: App, deps: Deps): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async (args: any) => {
       await rejectModalSubmitHandler(args);
+    },
+  );
+
+  app.action(
+    "expense_clarify",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (args: any) => {
+      const action = args.action as ButtonAction;
+      await clarifyButtonHandler({
+        ack: args.ack,
+        body: args.body as BlockAction,
+        client: args.client as WebClient,
+        action,
+      });
+    },
+  );
+
+  app.view(
+    MODAL_CLARIFY_CALLBACK_ID,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (args: any) => {
+      await clarifyModalSubmitHandler(args);
     },
   );
 

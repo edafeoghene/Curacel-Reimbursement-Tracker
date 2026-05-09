@@ -1,19 +1,19 @@
-// Block-kit builders for the Phase 1.0/1.1 DMs.
+// Block-kit builders for the Phase 1.0/1.1/1.2 DMs.
 //
 // Stable action_ids:
 //   - expense_approve
 //   - expense_reject       (Phase 1.1)
+//   - expense_clarify      (Phase 1.2)
 //   - expense_mark_paid
 //
 // Modal callback_ids:
-//   - expense_reject_modal (Phase 1.1)
+//   - expense_reject_modal  (Phase 1.1)
+//   - expense_clarify_modal (Phase 1.2)
 //
 // `tracking_id` is carried in the button's `value` field so handlers can
 // resolve the ticket without parsing block IDs. For modals, the same id
 // rides on `private_metadata` so the submit handler doesn't depend on a
 // stale button value.
-//
-// Phase 1.2+ (clarify / delegate) buttons are intentionally NOT emitted yet.
 
 import type { Ticket } from "../types.js";
 
@@ -21,11 +21,16 @@ export type Block = Record<string, unknown>;
 
 export const ACTION_APPROVE = "expense_approve";
 export const ACTION_REJECT = "expense_reject";
+export const ACTION_CLARIFY = "expense_clarify";
 export const ACTION_MARK_PAID = "expense_mark_paid";
 
 export const MODAL_REJECT_CALLBACK_ID = "expense_reject_modal";
 export const REJECT_REASON_BLOCK_ID = "reject_reason_block";
 export const REJECT_REASON_ACTION_ID = "reject_reason_input";
+
+export const MODAL_CLARIFY_CALLBACK_ID = "expense_clarify_modal";
+export const CLARIFY_QUESTION_BLOCK_ID = "clarify_question_block";
+export const CLARIFY_QUESTION_ACTION_ID = "clarify_question_input";
 
 // ---------- helpers ----------
 
@@ -117,6 +122,14 @@ export function approverDmBlocks(ticket: Ticket): {
         action_id: ACTION_APPROVE,
         style: "primary",
         text: { type: "plain_text", text: "Approve" },
+        value: ticket.tracking_id,
+      },
+      {
+        type: "button",
+        action_id: ACTION_CLARIFY,
+        // Neutral button — no `style` field. Clarify is a question, not an
+        // approval or a rejection.
+        text: { type: "plain_text", text: "Clarify" },
         value: ticket.tracking_id,
       },
       {
@@ -284,6 +297,125 @@ export function approverDmAfterReject(
   });
 
   const fallbackText = `Rejected: ${ticket.tracking_id}`;
+  return { blocks, fallbackText };
+}
+
+// ---------- approver DM: after clarify (Phase 1.2) ----------
+
+export function approverDmAfterClarify(
+  ticket: Ticket,
+  askedAt: Date,
+  approverName: string,
+  question: string,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("Expense approval needed"),
+    summaryFields(ticket),
+    descriptionBlock(ticket),
+  ];
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  blocks.push(divider());
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `:question: Awaiting clarification · ${hhmm(askedAt)} · ${approverName}`,
+      },
+    ],
+  });
+  blocks.push({
+    type: "section",
+    text: { type: "mrkdwn", text: `*Question:* ${question}` },
+  });
+
+  const fallbackText = `Awaiting clarification: ${ticket.tracking_id}`;
+  return { blocks, fallbackText };
+}
+
+// ---------- clarification question modal (Phase 1.2) ----------
+
+/**
+ * Modal opened when an approver clicks "Clarify". Submission carries the
+ * question in
+ * `view.state.values[CLARIFY_QUESTION_BLOCK_ID][CLARIFY_QUESTION_ACTION_ID].value`,
+ * and the tracking_id rides on `view.private_metadata`.
+ */
+export function clarificationQuestionModal(trackingId: string): Block {
+  return {
+    type: "modal",
+    callback_id: MODAL_CLARIFY_CALLBACK_ID,
+    private_metadata: trackingId,
+    title: { type: "plain_text", text: "Ask the requester" },
+    submit: { type: "plain_text", text: "Send" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `Asking about \`${trackingId}\`. The requester will see this question in the channel thread. The financial manager can resume the approval with \`/expense-resume ${trackingId}\` once it's answered.`,
+        },
+      },
+      {
+        type: "input",
+        block_id: CLARIFY_QUESTION_BLOCK_ID,
+        label: { type: "plain_text", text: "Question for the requester" },
+        element: {
+          type: "plain_text_input",
+          action_id: CLARIFY_QUESTION_ACTION_ID,
+          multiline: true,
+          max_length: 500,
+          placeholder: {
+            type: "plain_text",
+            text: "e.g. Who is this laptop for, and is it a replacement?",
+          },
+        },
+      },
+    ],
+  };
+}
+
+// ---------- FM clarification-hint DM (Phase 1.2) ----------
+
+/**
+ * Sent to the financial manager when an approver requests clarification on a
+ * ticket. The FM doesn't action the question — they just need to see the
+ * resume command once the requester answers.
+ */
+export function financialManagerClarifyHintBlocks(
+  ticket: Ticket,
+  approverUserId: string,
+  question: string,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("Clarification requested"),
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `<@${approverUserId}> asked the requester for clarification on \`${ticket.tracking_id}\`.`,
+      },
+    },
+    summaryFields(ticket),
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `*Question:* ${question}` },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `When the requester answers in the thread, resume with \`/expense-resume ${ticket.tracking_id}\`.`,
+        },
+      ],
+    },
+  ];
+
+  const fallbackText = `Clarification requested on ${ticket.tracking_id}`;
   return { blocks, fallbackText };
 }
 
