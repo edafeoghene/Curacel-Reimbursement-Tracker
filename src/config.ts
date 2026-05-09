@@ -92,7 +92,9 @@ const Schema = z.object({
 
   // Slack channel/user IDs
   EXPENSES_CHANNEL_ID: slackChannelId,
-  EXPENSE_LOG_CHANNEL_ID: slackChannelId.optional(),
+  // Empty string in .env counts as "unset" for this optional channel.
+  EXPENSE_LOG_CHANNEL_ID: z
+    .preprocess((v) => (v === "" ? undefined : v), slackChannelId.optional()),
   FINANCIAL_MANAGER_USER_ID: slackUserId,
 
   // Runtime

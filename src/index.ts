@@ -5,7 +5,10 @@
 
 import "dotenv/config";
 
-import { App, LogLevel } from "@slack/bolt";
+// @slack/bolt is CommonJS — namespace import + destructure works in both ESM
+// runtime (tsx/node) and TypeScript type checking under esModuleInterop.
+import bolt from "@slack/bolt";
+const { App, LogLevel } = bolt;
 
 import { loadConfig } from "./config.js";
 import { createHealthApp } from "./health.js";

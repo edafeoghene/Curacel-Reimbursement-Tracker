@@ -25,6 +25,27 @@ export class ClassifierParseError extends Error {
   }
 }
 
+/**
+ * Strip a markdown code fence from the model's response, if present. Even with
+ * `response_format: { type: "json_object" }`, providers occasionally still wrap
+ * the JSON in ```json ... ``` (or just ``` ... ```), and rarely with leading
+ * prose. We extract the inside of the first fenced block we find; absent any
+ * fence we trim and return the input unchanged.
+ *
+ * Exported for tests.
+ */
+export function extractJsonPayload(raw: string): string {
+  const trimmed = raw.trim();
+  // Whole-string fenced block: ```[lang]\n...\n```
+  const full = trimmed.match(/^```[a-zA-Z]*\s*\n?([\s\S]*?)\n?```\s*$/);
+  if (full && full[1] !== undefined) return full[1].trim();
+  // Otherwise take the first fenced block anywhere in the string (handles
+  // models that emit a sentence before the fence).
+  const inner = trimmed.match(/```[a-zA-Z]*\s*\n?([\s\S]*?)\n?```/);
+  if (inner && inner[1] !== undefined) return inner[1].trim();
+  return trimmed;
+}
+
 const ItemSchema = z.object({
   description: z.string(),
   category: z.enum(CLASSIFIER_CATEGORIES),
@@ -72,10 +93,11 @@ export async function classifyExpense(
 ): Promise<ClassifierResult> {
   const messages = buildClassifierMessages(input);
   const raw = await llmFn(messages, { jsonMode: true });
+  const payload = extractJsonPayload(raw);
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(payload);
   } catch (err) {
     throw new ClassifierParseError(
       `Classifier response was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,

@@ -4,7 +4,11 @@
 // need vitest module mocking.
 
 import { describe, it, expect } from "vitest";
-import { classifyExpense, ClassifierParseError } from "../../src/llm/classify.js";
+import {
+  classifyExpense,
+  ClassifierParseError,
+  extractJsonPayload,
+} from "../../src/llm/classify.js";
 import type { ClassifyInput } from "../../src/types.js";
 
 const baseInput: ClassifyInput = {
@@ -255,5 +259,86 @@ describe("classifyExpense", () => {
 
     await classifyExpense(baseInput, spyLLM);
     expect(capturedOptions?.jsonMode).toBe(true);
+  });
+});
+
+describe("extractJsonPayload", () => {
+  const goodJson = JSON.stringify({
+    is_expense: true,
+    confidence: 0.9,
+    items: [
+      {
+        description: "x",
+        category: "other",
+        amount: 1,
+        currency: "NGN",
+        vendor: "v",
+        date: "2026-05-09",
+      },
+    ],
+    notes: "",
+  });
+
+  it("returns input unchanged when there is no fence", () => {
+    expect(extractJsonPayload(goodJson)).toBe(goodJson);
+  });
+
+  it("strips a ```json fence", () => {
+    const wrapped = "```json\n" + goodJson + "\n```";
+    expect(extractJsonPayload(wrapped)).toBe(goodJson);
+  });
+
+  it("strips a bare ``` fence", () => {
+    const wrapped = "```\n" + goodJson + "\n```";
+    expect(extractJsonPayload(wrapped)).toBe(goodJson);
+  });
+
+  it("strips a fence with leading prose (extracts the inner block)", () => {
+    const wrapped = "Here is the result:\n```json\n" + goodJson + "\n```";
+    expect(extractJsonPayload(wrapped)).toBe(goodJson);
+  });
+
+  it("strips a fence with trailing whitespace", () => {
+    const wrapped = "```json\n" + goodJson + "\n```\n   ";
+    expect(extractJsonPayload(wrapped)).toBe(goodJson);
+  });
+
+  it("trims whitespace around an unfenced payload", () => {
+    expect(extractJsonPayload("   " + goodJson + "   ")).toBe(goodJson);
+  });
+});
+
+describe("classifyExpense fence resilience", () => {
+  it("parses a response wrapped in ```json fences", async () => {
+    const raw =
+      "```json\n" +
+      JSON.stringify({
+        is_expense: true,
+        confidence: 0.88,
+        items: [
+          {
+            description: "Bolt ride to CHI",
+            category: "transport",
+            amount: 5500,
+            currency: "NGN",
+            vendor: "Bolt",
+            date: "2026-05-09",
+          },
+        ],
+        notes: "",
+      }) +
+      "\n```";
+
+    const result = await classifyExpense(baseInput, fakeLLM(raw));
+    expect(result.is_expense).toBe(true);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.vendor).toBe("Bolt");
+  });
+
+  it("still throws ClassifierParseError on truly malformed JSON inside a fence", async () => {
+    const raw = "```json\n{not even close\n```";
+    await expect(classifyExpense(baseInput, fakeLLM(raw))).rejects.toBeInstanceOf(
+      ClassifierParseError,
+    );
   });
 });
