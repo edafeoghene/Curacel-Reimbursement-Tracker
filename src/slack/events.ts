@@ -1270,9 +1270,10 @@ async function routeToManualReview(
     description: item?.description ?? "(unclassified — manual review)",
     category: item?.category ?? "other",
     amount: item?.amount ?? 0,
-    // No currency default. PLAN.md §10 has none; the FM resolves it during
-    // manual review. An empty string makes the missing-data state visible.
-    currency: item?.currency ?? "",
+    // NGN is the operating currency for this workspace; default in if the
+    // classifier didn't pull one. Per user preference (overrides audit §11
+    // suggestion) — see memory/feedback_currency_default.md.
+    currency: item?.currency ?? "NGN",
     receipt_file_id: primary?.id ?? "",
     receipt_file_url: primary?.url_private ?? "",
     status: "MANUAL_REVIEW",
