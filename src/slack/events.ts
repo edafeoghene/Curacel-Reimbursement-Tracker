@@ -12,12 +12,17 @@ import type { Config } from "../config.js";
 import { generateTrackingId, isValidTrackingId } from "../id.js";
 import { ClassifierParseError, classifyExpense } from "../llm/classify.js";
 import { LLMCallFailed } from "../llm/client.js";
-import { appendApproval } from "../sheets/approvals.js";
+import {
+  appendApproval,
+  listApprovalsForTicket,
+  updateApprovalDecision,
+} from "../sheets/approvals.js";
 import { appendAuditLog } from "../sheets/audit.js";
 import {
   appendTicket,
   getTicketBySourceMessageTs,
   getTicketByTrackingId,
+  listNonTerminalTickets,
   updateTicket,
 } from "../sheets/tickets.js";
 import { resolveRoute } from "../state/routing.js";
@@ -25,9 +30,11 @@ import { transition } from "../state/machine.js";
 import { getCachedRoutes } from "../sheets/routes.js";
 import {
   AUDIT_EVENTS,
+  type Approval,
   type ClassifierImage,
   type ClassifierItem,
   type ClassifierResult,
+  type Status,
   type Ticket,
 } from "../types.js";
 import { v4 as uuidv4 } from "uuid";
@@ -438,6 +445,20 @@ export function makeMessageHandler(deps: HandlerDeps) {
     console.info(
       `[events] message received channel=${raw.channel ?? "?"} subtype=${raw.subtype ?? "(none)"} user=${raw.user ?? "?"} ts=${raw.ts ?? "?"} thread_ts=${raw.thread_ts ?? ""} files=${(raw.files ?? []).length}`,
     );
+
+    // First-branch dispatch: payment-proof file_shares from the FM in the
+    // FM's DM channel. Owns the AWAITING_PAYMENT → PAID transition. We
+    // short-circuit out of the normal expense-submission flow when this
+    // matches, so a payment proof can't be misclassified as an expense.
+    const proofMessage = raw as unknown as PaymentProofMessage;
+    if (looksLikePaymentProof(proofMessage, config.FINANCIAL_MANAGER_USER_ID)) {
+      await processPaymentProofFromFile({
+        client,
+        config,
+        message: proofMessage,
+      });
+      return;
+    }
 
     const dispatch = resolveSubmission(
       raw,
@@ -879,43 +900,14 @@ async function processOneItem(
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[events] approver DM failed:", err);
-    try {
-      const updated = await updateTicket(trackingId, ticket.row_version, {
-        status: "MANUAL_REVIEW",
-      });
-      await safeAudit({
-        tracking_id: trackingId,
-        actor_user_id: "system",
-        event_type: AUDIT_EVENTS.STATE_TRANSITION,
-        details: {
-          event: "DM_FAILED",
-          from: "SUBMITTED",
-          to: "MANUAL_REVIEW",
-          error: (err as Error).message,
-        },
-      });
-      try {
-        const { blocks, fallbackText } = manualReviewDmBlocks(
-          updated,
-          `Failed to DM approver <@${approverId}>: ${(err as Error).message}`,
-        );
-        await dmUser(
-          client,
-          config.FINANCIAL_MANAGER_USER_ID,
-          blocks,
-          fallbackText,
-        );
-      } catch (dmErr) {
-        // eslint-disable-next-line no-console
-        console.error("[events] manual-review DM failed:", dmErr);
-      }
-    } catch (upErr) {
-      // eslint-disable-next-line no-console
-      console.error(
-        "[events] failed to roll ticket to MANUAL_REVIEW:",
-        upErr,
-      );
-    }
+    const reason = `Failed to DM approver <@${approverId}>: ${(err as Error).message}`;
+    await escalateToManualReview({
+      client,
+      config,
+      ticket,
+      reason,
+      fromStatus: ticket.status,
+    });
     return {
       kind: "manual",
       trackingId,
@@ -943,14 +935,13 @@ async function processOneItem(
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[events] appendApproval failed:", err);
-    try {
-      await updateTicket(trackingId, ticket.row_version, {
-        status: "MANUAL_REVIEW",
-      });
-    } catch (upErr) {
-      // eslint-disable-next-line no-console
-      console.error("[events] rollback to MANUAL_REVIEW failed:", upErr);
-    }
+    await escalateToManualReview({
+      client,
+      config,
+      ticket,
+      reason: `Approval row could not be written for step 1: ${(err as Error).message}`,
+      fromStatus: ticket.status,
+    });
     return {
       kind: "manual",
       trackingId,
@@ -1006,6 +997,251 @@ export function registerMessageHandler(app: App, deps: HandlerDeps): void {
 }
 
 // ---------- helpers ----------
+
+interface EscalateArgs {
+  client: WebClient;
+  config: Config;
+  ticket: Ticket;
+  reason: string;
+  fromStatus: Status;
+}
+
+/**
+ * Push a ticket already in the sheet to MANUAL_REVIEW via the state machine
+ * (PLAN.md §4 #10: every status mutation must go through transition()). Used
+ * when a recoverable failure leaves a ticket in a state that can't proceed
+ * via the happy path — e.g. DM rejected, route deleted, approval row write
+ * failed. Sends the configured side effects (FM DM with the reason) and
+ * audits the transition with the canonical event name. Errors during the
+ * recovery path itself are logged; we don't recurse.
+ */
+export async function escalateToManualReview(
+  args: EscalateArgs,
+): Promise<void> {
+  const { client, config, ticket, reason, fromStatus } = args;
+  const result = transition(ticket, {
+    type: "ESCALATE_TO_MANUAL_REVIEW",
+    reason,
+  });
+  if (!result.ok) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[events] escalateToManualReview illegal: ${result.error}`,
+    );
+    return;
+  }
+  let updated: Ticket;
+  try {
+    updated = await updateTicket(ticket.tracking_id, ticket.row_version, {
+      status: result.next,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(
+      "[events] escalateToManualReview updateTicket failed:",
+      err,
+    );
+    return;
+  }
+  await safeAudit({
+    tracking_id: ticket.tracking_id,
+    actor_user_id: "system",
+    event_type: AUDIT_EVENTS.STATE_TRANSITION,
+    details: {
+      event: "ESCALATE_TO_MANUAL_REVIEW",
+      from: fromStatus,
+      to: result.next,
+      reason,
+    },
+  });
+  // Side effect: DM the FM with the reason.
+  for (const effect of result.sideEffects) {
+    if (effect.type !== "DM_FINANCIAL_MANAGER_MANUAL_REVIEW") continue;
+    try {
+      const { blocks, fallbackText } = manualReviewDmBlocks(
+        updated,
+        effect.reason,
+      );
+      await dmUser(
+        client,
+        config.FINANCIAL_MANAGER_USER_ID,
+        blocks,
+        fallbackText,
+      );
+    } catch (dmErr) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[events] escalate manual-review DM failed:",
+        dmErr,
+      );
+    }
+  }
+}
+
+// ---------- payment-proof watcher (relocated from interactivity.ts) ----------
+
+interface PaymentProofFile {
+  id?: string;
+  permalink?: string;
+  url_private?: string;
+}
+
+interface PaymentProofMessage {
+  channel?: string;
+  user?: string;
+  files?: PaymentProofFile[];
+  ts?: string;
+  subtype?: string;
+}
+
+/**
+ * Should the FM-DM file_share watcher try to claim this message? Pure-ish
+ * predicate so the dispatcher in makeMessageHandler can branch without
+ * duplicating logic.
+ */
+function looksLikePaymentProof(
+  msg: PaymentProofMessage,
+  fmUserId: string,
+): boolean {
+  if (msg.subtype !== "file_share") return false;
+  if (!msg.channel || !msg.user) return false;
+  if (msg.user !== fmUserId) return false;
+  if (!msg.files || msg.files.length === 0) return false;
+  return true;
+}
+
+/**
+ * Match a file_share from the financial manager to an AWAITING_PAYMENT
+ * ticket via its sentinel approval row, then run PAYMENT_CONFIRMED through
+ * the state machine, mark the sentinel as approved, post the proof in the
+ * source thread, and emit the feed line. Owner of the entire payment
+ * confirmation flow.
+ *
+ * Lives in events.ts so there's one Bolt `app.message(...)` registration in
+ * the codebase — see PLAN.md / NEXT.md note about consolidating dispatch.
+ */
+async function processPaymentProofFromFile(args: {
+  client: WebClient;
+  config: Config;
+  message: PaymentProofMessage;
+}): Promise<void> {
+  const { client, config, message } = args;
+  const file = (message.files ?? [])[0];
+  if (!file?.id) return;
+
+  let candidates: Ticket[];
+  try {
+    candidates = await listNonTerminalTickets();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[events] listNonTerminalTickets failed:", err);
+    return;
+  }
+  const awaiting = candidates.filter(
+    (t) => t.status === "AWAITING_PAYMENT",
+  );
+  if (awaiting.length === 0) return;
+
+  let matched: { ticket: Ticket; sentinel: Approval } | null = null;
+  for (const t of awaiting) {
+    let approvals: Approval[];
+    try {
+      approvals = await listApprovalsForTicket(t.tracking_id);
+    } catch {
+      continue;
+    }
+    const sentinel = approvals.find(
+      (a) =>
+        a.step_number === PAYMENT_STEP_SENTINEL &&
+        a.dm_channel_id === message.channel,
+    );
+    if (sentinel) {
+      matched = { ticket: t, sentinel };
+      break;
+    }
+  }
+
+  if (!matched) {
+    // File posted in an unrelated DM — ignore.
+    return;
+  }
+
+  const { ticket } = matched;
+
+  const result = transition(ticket, {
+    type: "PAYMENT_CONFIRMED",
+    file_id: file.id,
+  });
+  if (!result.ok) {
+    // eslint-disable-next-line no-console
+    console.warn(`[events] PAYMENT_CONFIRMED illegal: ${result.error}`);
+    return;
+  }
+
+  let updated: Ticket;
+  try {
+    updated = await updateTicket(ticket.tracking_id, ticket.row_version, {
+      status: result.next,
+      payment_confirmation_file_id: file.id,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[events] updateTicket(PAID) failed:", err);
+    return;
+  }
+
+  await safeAudit({
+    tracking_id: ticket.tracking_id,
+    actor_user_id: message.user!,
+    event_type: AUDIT_EVENTS.PAYMENT_CONFIRMED,
+    details: { file_id: file.id, permalink: file.permalink },
+  });
+  await safeAudit({
+    tracking_id: ticket.tracking_id,
+    actor_user_id: message.user!,
+    event_type: AUDIT_EVENTS.STATE_TRANSITION,
+    details: {
+      event: "PAYMENT_CONFIRMED",
+      from: ticket.status,
+      to: result.next,
+    },
+  });
+
+  // Close the sentinel approval row (idempotent on retry).
+  try {
+    await updateApprovalDecision(matched.sentinel.approval_id, {
+      decision: "APPROVED",
+      decided_at: new Date().toISOString(),
+      comment: "payment confirmed",
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[events] sentinel approval close failed:", err);
+  }
+
+  // Forward to the requester's source thread.
+  try {
+    const link =
+      file.permalink ?? file.url_private ?? "(payment proof attached)";
+    await client.chat.postMessage({
+      channel: updated.source_channel_id,
+      thread_ts: updated.source_message_ts,
+      text: `Payment processed for \`${updated.tracking_id}\` :white_check_mark:\n${link}`,
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[events] forwarding payment proof to thread failed:",
+      err,
+    );
+  }
+
+  await postFeedLine(
+    client,
+    config,
+    `:dollar: Paid: \`${updated.tracking_id}\` (proof attached)`,
+  );
+}
 
 interface ManualReviewArgs {
   client: WebClient;

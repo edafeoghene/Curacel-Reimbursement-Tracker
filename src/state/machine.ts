@@ -135,6 +135,19 @@ export function transition(
       ]);
     }
 
+    case "ESCALATE_TO_MANUAL_REVIEW": {
+      // Out-of-band recovery escalation — legal from any non-terminal state.
+      // Caller is responsible for the underlying issue (failed DM, lost route,
+      // etc.); this just keeps the state write honest with PLAN.md §4 #10 and
+      // surfaces to the FM uniformly.
+      if (isTerminal(status)) {
+        return illegal(status, event.type);
+      }
+      return ok("MANUAL_REVIEW", [
+        { type: "DM_FINANCIAL_MANAGER_MANUAL_REVIEW", reason: event.reason },
+      ]);
+    }
+
     default: {
       // Exhaustiveness guard — if a new StateEvent variant is added and not
       // handled above, TypeScript will complain here.

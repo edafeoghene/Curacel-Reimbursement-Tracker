@@ -17,13 +17,18 @@ import { v4 as uuidv4 } from "uuid";
 import type { Config } from "../config.js";
 import { appendApproval, listApprovalsForTicket, updateApprovalDecision } from "../sheets/approvals.js";
 import { getCachedRoutes } from "../sheets/routes.js";
-import { getTicketByTrackingId, listNonTerminalTickets, updateTicket } from "../sheets/tickets.js";
+import { getTicketByTrackingId, updateTicket } from "../sheets/tickets.js";
 import { transition } from "../state/machine.js";
 import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
 
 import { postFeedLine } from "./feed.js";
 import { dmUser, postEphemeral, updateMessage } from "./messaging.js";
-import { fetchUserName, PAYMENT_STEP_SENTINEL, safeAudit } from "./events.js";
+import {
+  escalateToManualReview,
+  fetchUserName,
+  PAYMENT_STEP_SENTINEL,
+  safeAudit,
+} from "./events.js";
 import {
   approverDmAfterApprove,
   approverDmAfterClarify,
@@ -148,46 +153,21 @@ function makeApproveHandler({ config }: Deps) {
     }
 
     // Look up the route to compute is_final_step. Fail loudly to MANUAL_REVIEW
-    // if the ticket's route_id is no longer in the cache (route was deleted or
-    // renamed mid-flight). Per PLAN.md §14.
+    // (via the state machine) if the ticket's route_id is no longer in the
+    // cache (route was deleted or renamed mid-flight). Per PLAN.md §14.
     const route = getCachedRoutes().find((r) => r.route_id === ticket.route_id);
     if (!route) {
       // eslint-disable-next-line no-console
       console.warn(
         `[interactivity] expense_approve: route ${ticket.route_id} not in cache; routing to MANUAL_REVIEW`,
       );
-      try {
-        const updated = await updateTicket(trackingId, ticket.row_version, {
-          status: "MANUAL_REVIEW",
-        });
-        await safeAudit({
-          tracking_id: trackingId,
-          actor_user_id: "system",
-          event_type: AUDIT_EVENTS.STATE_TRANSITION,
-          details: {
-            event: "ROUTE_LOST",
-            from: ticket.status,
-            to: "MANUAL_REVIEW",
-            route_id: ticket.route_id,
-          },
-        });
-        const { blocks, fallbackText } = manualReviewDmBlocks(
-          updated,
-          `Route \`${ticket.route_id}\` is no longer in the routes sheet — cannot determine the approval chain.`,
-        );
-        await dmUser(
-          client,
-          config.FINANCIAL_MANAGER_USER_ID,
-          blocks,
-          fallbackText,
-        );
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(
-          "[interactivity] route-lost MANUAL_REVIEW handling failed:",
-          err,
-        );
-      }
+      await escalateToManualReview({
+        client,
+        config,
+        ticket,
+        reason: `Route \`${ticket.route_id}\` is no longer in the routes sheet — cannot determine the approval chain.`,
+        fromStatus: ticket.status,
+      });
       try {
         if (channelId) {
           await postEphemeral(
@@ -1304,161 +1284,10 @@ function makeMarkPaidHandler({ config }: Deps) {
   };
 }
 
-// ---------- payment-proof watcher ----------
-
-interface FileShareEvent {
-  channel?: string;
-  user?: string;
-  files?: Array<{
-    id?: string;
-    permalink?: string;
-    url_private?: string;
-  }>;
-  ts?: string;
-}
-
-function makeFileShareHandler({ config }: Deps) {
-  return async ({
-    message,
-    client,
-  }: {
-    message: unknown;
-    client: WebClient;
-  }): Promise<void> => {
-    const ev = message as FileShareEvent & { subtype?: string };
-    if (ev.subtype !== "file_share") return;
-    if (!ev.channel || !ev.user) return;
-    if (ev.user !== config.FINANCIAL_MANAGER_USER_ID) return;
-    const files = ev.files ?? [];
-    if (files.length === 0) return;
-    const file = files[0]!;
-    if (!file.id) return;
-
-    // Find an AWAITING_PAYMENT ticket whose sentinel approval row's
-    // dm_channel_id matches this file-share's channel.
-    let candidates: Ticket[];
-    try {
-      candidates = await listNonTerminalTickets();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[interactivity] listNonTerminalTickets failed:", err);
-      return;
-    }
-    const awaiting = candidates.filter((t) => t.status === "AWAITING_PAYMENT");
-    if (awaiting.length === 0) return;
-
-    let matched: { ticket: Ticket; sentinel: Approval } | null = null;
-    for (const t of awaiting) {
-      let approvals: Approval[];
-      try {
-        approvals = await listApprovalsForTicket(t.tracking_id);
-      } catch {
-        continue;
-      }
-      const sentinel = approvals.find(
-        (a) =>
-          a.step_number === PAYMENT_STEP_SENTINEL &&
-          a.dm_channel_id === ev.channel,
-      );
-      if (sentinel) {
-        matched = { ticket: t, sentinel };
-        break;
-      }
-    }
-
-    if (!matched) {
-      // File posted in an unrelated DM — ignore.
-      return;
-    }
-
-    const { ticket } = matched;
-
-    const result = transition(ticket, {
-      type: "PAYMENT_CONFIRMED",
-      file_id: file.id,
-    });
-    if (!result.ok) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[interactivity] PAYMENT_CONFIRMED illegal: ${result.error}`,
-      );
-      return;
-    }
-
-    let updated: Ticket;
-    try {
-      updated = await updateTicket(ticket.tracking_id, ticket.row_version, {
-        status: result.next,
-        payment_confirmation_file_id: file.id,
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(
-        "[interactivity] updateTicket(PAID) failed:",
-        err,
-      );
-      return;
-    }
-
-    await safeAudit({
-      tracking_id: ticket.tracking_id,
-      actor_user_id: ev.user,
-      event_type: AUDIT_EVENTS.PAYMENT_CONFIRMED,
-      details: { file_id: file.id, permalink: file.permalink },
-    });
-    await safeAudit({
-      tracking_id: ticket.tracking_id,
-      actor_user_id: ev.user,
-      event_type: AUDIT_EVENTS.STATE_TRANSITION,
-      details: {
-        event: "PAYMENT_CONFIRMED",
-        from: ticket.status,
-        to: result.next,
-      },
-    });
-
-    // Mark the sentinel approval row as APPROVED so it's clear the payment
-    // step is closed. (Idempotent — second click is a no-op.)
-    try {
-      await updateApprovalDecision(matched.sentinel.approval_id, {
-        decision: "APPROVED",
-        decided_at: new Date().toISOString(),
-        comment: "payment confirmed",
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[interactivity] sentinel approval close failed:",
-        err,
-      );
-    }
-
-    // Forward to the requester's source thread.
-    try {
-      const link =
-        file.permalink ?? file.url_private ?? "(payment proof attached)";
-      await client.chat.postMessage({
-        channel: updated.source_channel_id,
-        thread_ts: updated.source_message_ts,
-        text: `Payment processed for \`${updated.tracking_id}\` :white_check_mark:\n${link}`,
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[interactivity] forwarding payment proof to thread failed:",
-        err,
-      );
-    }
-
-    await postFeedLine(
-      client,
-      config,
-      `:dollar: Paid: \`${updated.tracking_id}\` (proof attached)`,
-    );
-  };
-}
-
 // ---------- public registration ----------
+// NOTE: the FM payment-proof file_share watcher used to live here. As of the
+// audit fix it lives in events.ts inside the single message dispatcher, so
+// there is now exactly one app.message(...) registration in the codebase.
 
 export function registerInteractivity(app: App, deps: Deps): void {
   // Bolt's `app.action(id, handler)` types are loose — cast handler to the
@@ -1471,7 +1300,6 @@ export function registerInteractivity(app: App, deps: Deps): void {
   const delegateButtonHandler = makeDelegateButtonHandler();
   const delegateModalSubmitHandler = makeDelegateModalSubmitHandler(deps);
   const markPaidHandler = makeMarkPaidHandler(deps);
-  const fileShareHandler = makeFileShareHandler(deps);
 
   app.action(
     "expense_approve",
@@ -1570,16 +1398,7 @@ export function registerInteractivity(app: App, deps: Deps): void {
     },
   );
 
-  // The `file_share` message subtype carries the file in `message.files[0]`.
-  // We use `app.message` rather than `app.event("file_shared")` because the
-  // message subtype gives us the user + channel + files in one payload.
-  app.message(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async (args: any) => {
-      await fileShareHandler({
-        message: args.message,
-        client: args.client as WebClient,
-      });
-    },
-  );
+  // No app.message(...) here. The single message-event registration lives
+  // in events.ts (registerMessageHandler) and dispatches to the
+  // payment-proof watcher when a file_share from the FM lands in the FM DM.
 }

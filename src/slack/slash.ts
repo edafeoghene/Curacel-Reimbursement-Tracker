@@ -332,9 +332,19 @@ function makeExpenseCancelHandler({ config }: Deps) {
         err,
       );
     }
-    // Includes the FM Mark-as-Paid sentinel row when it's still PENDING.
+    // Every approval row that still has an open, actionable DM for THIS
+    // ticket. PENDING covers AWAITING_APPROVAL/AWAITING_PAYMENT (incl. the
+    // FM Mark-as-Paid sentinel). CLARIFICATION_REQUESTED covers
+    // NEEDS_CLARIFICATION — without this branch the approver DM stays at
+    // ":question: Awaiting clarification" forever after a cancel.
+    // DELEGATED rows already had their DMs replaced with "Delegated to
+    // <@new>", so they don't need editing again.
     const pending = approvals.filter(
-      (a) => a.decision === "PENDING" && a.dm_channel_id && a.message_ts,
+      (a) =>
+        (a.decision === "PENDING" ||
+          a.decision === "CLARIFICATION_REQUESTED") &&
+        a.dm_channel_id &&
+        a.message_ts,
     );
     const { blocks, fallbackText } = dmAfterCancel(
       updatedTicket,

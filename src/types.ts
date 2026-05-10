@@ -110,7 +110,13 @@ export type StateEvent =
   | { type: "RESUME_AFTER_CLARIFY" }
   | { type: "MARK_AS_PAID" }
   | { type: "PAYMENT_CONFIRMED"; file_id: string }
-  | { type: "CANCEL"; actor_user_id: string };
+  | { type: "CANCEL"; actor_user_id: string }
+  // Recovery escalation. Legal from any non-terminal status. Used when an
+  // out-of-band failure (DM rejected, route deleted mid-flight, approval row
+  // write failed, etc.) leaves a ticket in a state that can't proceed via the
+  // normal happy path. PLAN.md §4 #10: every status mutation must go through
+  // transition() — this event keeps recovery paths honest with the rule.
+  | { type: "ESCALATE_TO_MANUAL_REVIEW"; reason: string };
 
 export type SideEffect =
   // Non-final APPROVE: advance the chain. Caller resolves the next approver

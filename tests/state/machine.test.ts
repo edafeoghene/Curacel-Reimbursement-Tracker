@@ -408,6 +408,48 @@ describe("transition: CANCEL", () => {
   });
 });
 
+describe("transition: ESCALATE_TO_MANUAL_REVIEW", () => {
+  it("escalates from any non-terminal status with a DM_FINANCIAL_MANAGER_MANUAL_REVIEW side effect", () => {
+    const nonTerminals: Status[] = [
+      "SUBMITTED",
+      "AWAITING_APPROVAL",
+      "NEEDS_CLARIFICATION",
+      "APPROVED",
+      "AWAITING_PAYMENT",
+      "MANUAL_REVIEW",
+    ];
+    for (const status of nonTerminals) {
+      const r = transition(makeTicket({ status }), {
+        type: "ESCALATE_TO_MANUAL_REVIEW",
+        reason: "DM rejected",
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) continue;
+      expect(r.next).toBe("MANUAL_REVIEW");
+      expect(r.sideEffects).toEqual([
+        {
+          type: "DM_FINANCIAL_MANAGER_MANUAL_REVIEW",
+          reason: "DM rejected",
+        },
+      ]);
+    }
+  });
+
+  it("rejects ESCALATE_TO_MANUAL_REVIEW from terminal states", () => {
+    for (const status of ["PAID", "REJECTED", "CANCELLED"] as const) {
+      const r = transition(makeTicket({ status }), {
+        type: "ESCALATE_TO_MANUAL_REVIEW",
+        reason: "any",
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toContain(status);
+        expect(r.error).toContain("ESCALATE_TO_MANUAL_REVIEW");
+      }
+    }
+  });
+});
+
 describe("transition: error message shape", () => {
   it("names the current status and the event type in the error", () => {
     const r = transition(makeTicket({ status: "PAID" }), {
