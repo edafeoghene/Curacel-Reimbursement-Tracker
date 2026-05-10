@@ -70,7 +70,7 @@ Each wave is its own commit (or small commit chain). Bot's `src/` is touched onl
 1. `frontend/` via `create-next-app` (Next.js 15, App Router, TypeScript strict, Tailwind).
 2. shadcn/ui init.
 3. Basic layout shell + placeholder home page.
-4. `frontend/.env.example`.
+4. New env vars added to root `.env.example` under a Phase 2 section.
 5. Verify `npm run build -w frontend`.
 
 ### Wave 2.2 — Auth spine
@@ -116,7 +116,12 @@ Each wave is its own commit (or small commit chain). Bot's `src/` is touched onl
 
 ---
 
-## Required new env vars (in `frontend/.env.example`)
+## Required new env vars (in root `.env`, not a separate frontend file)
+
+The frontend reads the same root `.env` as the bot — `frontend/next.config.ts`
+calls `@next/env`'s `loadEnvConfig(repoRoot)` so Next.js picks up the parent
+directory's env file. New vars added under a Phase 2 section in
+[.env.example](./.env.example):
 
 ```
 NEXTAUTH_URL=http://localhost:3001
@@ -124,13 +129,10 @@ NEXTAUTH_SECRET=                          # openssl rand -hex 32
 GOOGLE_CLIENT_ID=                          # Google Cloud Console → OAuth client
 GOOGLE_CLIENT_SECRET=
 ALLOWED_FM_EMAILS=                         # CSV, lowercased+trimmed at runtime
-
-# Reused from the bot (frontend reads, never writes)
-GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=
-GOOGLE_SHEETS_SPREADSHEET_ID=
-SLACK_BOT_TOKEN=                           # for the file proxy only
-EXPENSES_CHANNEL_ID=
 ```
+
+`GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCOUNT_B64`, `SLACK_BOT_TOKEN`,
+`EXPENSES_CHANNEL_ID` are reused from the bot's existing vars — no duplication.
 
 ---
 
