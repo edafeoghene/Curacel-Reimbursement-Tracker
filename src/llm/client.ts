@@ -8,6 +8,24 @@
 
 import OpenAI, { APIError } from "openai";
 
+/**
+ * Minimal shape the wrapper actually consumes from the OpenAI client. Tests
+ * inject a stub matching this surface; production code passes the real
+ * `OpenAI` instance, which is structurally compatible.
+ */
+export interface LLMClientLike {
+  chat: {
+    completions: {
+      create: (
+        body: Record<string, unknown>,
+        opts: { signal: AbortSignal },
+      ) => Promise<{
+        choices?: Array<{ message?: { content?: string | null } }>;
+      }>;
+    };
+  };
+}
+
 export interface CallLLMOptions {
   /** Override the default model. Usually you don't. */
   model?: string;
@@ -17,6 +35,12 @@ export interface CallLLMOptions {
   maxTokens?: number;
   /** Optional abort signal for caller-side cancellation. */
   signal?: AbortSignal;
+  /**
+   * Test-only seam: inject a stand-in for the OpenAI/OpenRouter client.
+   * Production callers omit this and the real lazy singleton is used.
+   * Underscore prefix marks it as not part of the public API.
+   */
+  _clientFactory?: () => LLMClientLike;
 }
 
 export class LLMCallFailed extends Error {
@@ -145,7 +169,12 @@ export async function callLLM(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   options?: CallLLMOptions,
 ): Promise<string> {
-  const client = getClient();
+  // The real OpenAI client and our test stub both satisfy the surface we use,
+  // but the SDK's `create` is overloaded so its concrete type is not directly
+  // assignable to our minimal `LLMClientLike`. Narrow through `unknown`.
+  const client: LLMClientLike = options?._clientFactory
+    ? options._clientFactory()
+    : (getClient() as unknown as LLMClientLike);
   const model = getModel(options?.model);
   const jsonMode = options?.jsonMode ?? true;
 
@@ -164,7 +193,8 @@ export async function callLLM(
           messages,
           ...(jsonMode ? { response_format: { type: "json_object" as const } } : {}),
           ...(options?.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
-          // @ts-expect-error provider is OpenRouter-specific
+          // OpenRouter-specific provider lock — not in OpenAI's body schema, but
+          // structurally fine via LLMClientLike's `Record<string, unknown>` body.
           provider: { order: ["anthropic"], allow_fallbacks: false },
         },
         { signal: controller.signal },
