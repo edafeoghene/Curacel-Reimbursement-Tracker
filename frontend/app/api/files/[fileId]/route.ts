@@ -77,8 +77,27 @@ export async function GET(
   // is immutable, but we still want the auth gate to re-evaluate after
   // session expiry. 5 min is the common middle ground.
   headers.set("Cache-Control", "private, max-age=300");
-  if (info.name) {
-    headers.set("Content-Disposition", `inline; filename="${info.name.replace(/"/g, "")}"`);
+  const safeFilename = sanitizeFilenameForContentDisposition(info.name);
+  if (safeFilename) {
+    headers.set("Content-Disposition", `inline; filename="${safeFilename}"`);
   }
   return new Response(upstream.body, { status: 200, headers });
+}
+
+/**
+ * Sanitize a Slack-uploader-supplied filename before embedding it in a
+ * Content-Disposition header. Slack file names are uploader-controlled,
+ * and a name containing CR / LF could in theory inject a new header
+ * (HTTP response splitting). Defense in depth — modern fetch APIs
+ * typically reject control chars too, but stripping at the source costs
+ * nothing.
+ *
+ * Strips: ASCII control chars (\x00–\x1f, \x7f), double quotes (break
+ * the quoted-string form), backslashes (escape character). Caps at 200
+ * chars to keep the header sane.
+ */
+function sanitizeFilenameForContentDisposition(name: string | undefined | null): string {
+  if (!name) return "";
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[\x00-\x1f\x7f"\\]/g, "").slice(0, 200);
 }

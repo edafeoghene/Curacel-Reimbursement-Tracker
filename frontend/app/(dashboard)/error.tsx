@@ -26,7 +26,9 @@ export default function DashboardError({
         Something went wrong
       </h1>
       <p className="mt-1 text-sm text-red-800 dark:text-red-300">
-        {error.message || "Unknown error rendering this page."}
+        We couldn&apos;t render this page. The issue may be transient — try again, or
+        reload the dashboard. If it persists, share the reference below with the
+        admin.
       </p>
       {error.digest ? (
         <p className="mt-1 font-mono text-xs text-red-700/80 dark:text-red-400/80">
