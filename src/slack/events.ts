@@ -420,11 +420,18 @@ export function makeMessageHandler(deps: HandlerDeps) {
     );
 
     // First-branch dispatch: payment-proof file_shares from the FM in the
-    // FM's DM channel. Owns the AWAITING_PAYMENT → PAID transition. We
-    // short-circuit out of the normal expense-submission flow when this
-    // matches, so a payment proof can't be misclassified as an expense.
+    // FM's DM channel (NOT in the expenses channel). Owns the
+    // AWAITING_PAYMENT → PAID transition. We short-circuit out of the
+    // normal expense-submission flow when this matches, so a payment proof
+    // can't be misclassified as an expense.
     const proofMessage = raw as unknown as PaymentProofMessage;
-    if (looksLikePaymentProof(proofMessage, config.FINANCIAL_MANAGER_USER_ID)) {
+    if (
+      looksLikePaymentProof(
+        proofMessage,
+        config.FINANCIAL_MANAGER_USER_ID,
+        config.EXPENSES_CHANNEL_ID,
+      )
+    ) {
       await processPaymentProofFromFile({
         client,
         config,
@@ -1085,14 +1092,22 @@ interface PaymentProofMessage {
  * Should the FM-DM file_share watcher try to claim this message? Pure-ish
  * predicate so the dispatcher in makeMessageHandler can branch without
  * duplicating logic.
+ *
+ * IMPORTANT: also requires `msg.channel !== expensesChannelId`. If the same
+ * person is both the FM and a requester (single-person testing or small
+ * teams), a receipt they upload in the source channel must NOT be claimed
+ * as a payment proof. Payment proofs only ever land in the FM's DM with
+ * the bot, never in the public expenses channel.
  */
 function looksLikePaymentProof(
   msg: PaymentProofMessage,
   fmUserId: string,
+  expensesChannelId: string,
 ): boolean {
   if (msg.subtype !== "file_share") return false;
   if (!msg.channel || !msg.user) return false;
   if (msg.user !== fmUserId) return false;
+  if (msg.channel === expensesChannelId) return false;
   if (!msg.files || msg.files.length === 0) return false;
   return true;
 }
