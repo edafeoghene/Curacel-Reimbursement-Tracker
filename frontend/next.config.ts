@@ -8,13 +8,17 @@ const repoRoot = path.resolve(dirname, "..");
 
 // Single .env file for the whole monorepo. The bot loads /<root>/.env via
 // `dotenv` at boot; we want the frontend to read the same file so the user
-// doesn't manage two places. By default @next/env only loads .env files
-// from the Next.js project's own directory (frontend/) — calling
-// loadEnvConfig with the repo root pulls in the root .env too.
+// doesn't manage two places.
 //
-// Vercel deploys don't have a .env file at all (vars come from the Vercel
-// dashboard) so this is a no-op there.
-loadEnvConfig(repoRoot);
+// @next/env's loadEnvConfig caches after its first call (which Next makes
+// internally with cwd=frontend/, finding no .env files there). The fourth
+// arg `forceReload=true` is required to make this second call actually
+// re-read from the new directory.
+//
+// dev=true loads .env.development files too. Vercel deploys don't have a
+// .env file at all (vars come from the dashboard) so this is a no-op there.
+const isDev = process.env.NODE_ENV !== "production";
+loadEnvConfig(repoRoot, isDev, undefined, true);
 
 const nextConfig: NextConfig = {
   // Monorepo: pin Turbopack's root to the repo root so it can resolve the
