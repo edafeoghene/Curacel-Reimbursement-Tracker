@@ -51,26 +51,11 @@ export default async function TicketDetailPage({
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
-        <div className="space-y-6">
-          <HeaderCard ticket={ticket} />
-          <DescriptionCard ticket={ticket} />
-          {approvals.length > 0 ? <ApprovalTimeline approvals={approvals} /> : null}
-        </div>
-        <div className="space-y-6">
-          {ticket.receipt_file_id ? (
-            <FileCard
-              title="Receipt"
-              fileId={ticket.receipt_file_id}
-            />
-          ) : null}
-          {ticket.payment_confirmation_file_id ? (
-            <FileCard
-              title="Payment proof"
-              fileId={ticket.payment_confirmation_file_id}
-            />
-          ) : null}
-        </div>
+      <div className="space-y-6">
+        <HeaderCard ticket={ticket} />
+        <DescriptionCard ticket={ticket} />
+        {approvals.length > 0 ? <ApprovalTimeline approvals={approvals} /> : null}
+        <FilesSection ticket={ticket} />
       </div>
     </div>
   );
@@ -155,19 +140,60 @@ function ApprovalTimeline({ approvals }: { approvals: Approval[] }) {
   );
 }
 
-function FileCard({ title, fileId }: { title: string; fileId: string }) {
+function FilesSection({ ticket }: { ticket: Ticket }) {
+  const hasReceipt = Boolean(ticket.receipt_file_id);
+  const hasPayment = Boolean(ticket.payment_confirmation_file_id);
+  if (!hasReceipt && !hasPayment) return null;
+
+  // Side-by-side when both exist (prevents the page from extending
+  // unnecessarily); single column when only one exists so the lone
+  // card uses the full row rather than sitting half-empty.
+  const cols = hasReceipt && hasPayment ? "md:grid-cols-2" : "md:grid-cols-1";
+
+  return (
+    <div className={`grid grid-cols-1 gap-6 ${cols}`}>
+      {hasReceipt ? (
+        <FileCard
+          title="Expense receipt"
+          subtitle="Submitted with the original ticket."
+          fileId={ticket.receipt_file_id}
+        />
+      ) : null}
+      {hasPayment && ticket.payment_confirmation_file_id ? (
+        <FileCard
+          title="Payment proof"
+          subtitle="Uploaded after Mark as Paid."
+          fileId={ticket.payment_confirmation_file_id}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function FileCard({
+  title,
+  subtitle,
+  fileId,
+}: {
+  title: string;
+  subtitle: string;
+  fileId: string;
+}) {
   const src = `/api/files/${encodeURIComponent(fileId)}`;
   return (
     <div className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h2>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
+          <p className="mt-0.5 text-xs text-zinc-500">{subtitle}</p>
+        </div>
         <a
           href={src}
           target="_blank"
           rel="noreferrer"
-          className="text-xs text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+          className="shrink-0 text-xs text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
         >
-          Open
+          Open ↗
         </a>
       </div>
       <FilePreview src={src} alt={title} />
