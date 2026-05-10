@@ -5,10 +5,14 @@ import type { Status, Ticket } from "@curacel/shared";
 import {
   aggregateByStatus,
   computeKpis,
+  computeMedianTimeToPayDays,
+  computePaidPeriodDelta,
+  findStuckTickets,
   formatCurrencyCompact,
   formatCurrencyFull,
   summarizeOtherCurrencies,
   topCategoriesPaidThisMonth,
+  topRequestersPaidThisMonth,
   weeklyPaid,
   weekStartUtc,
 } from "./aggregates";
@@ -199,6 +203,161 @@ describe("summarizeOtherCurrencies", () => {
 
   it("returns zero when every ticket is NGN", () => {
     expect(summarizeOtherCurrencies([makeTicket({})])).toEqual({ count: 0, currencies: [] });
+  });
+});
+
+describe("topRequestersPaidThisMonth", () => {
+  it("groups by requester_user_id and uses the most recent name", () => {
+    const now = new Date();
+    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-15T10:00:00Z`;
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", amount: 100, requester_user_id: "U_ALICE", requester_name: "Alice", updated_at: thisMonth }),
+      makeTicket({ tracking_id: "T2", status: "PAID", amount: 300, requester_user_id: "U_ALICE", requester_name: "", updated_at: thisMonth }),
+      makeTicket({ tracking_id: "T3", status: "PAID", amount: 200, requester_user_id: "U_BOB", requester_name: "Bob", updated_at: thisMonth }),
+      makeTicket({ tracking_id: "T4", status: "PAID", amount: 500, requester_user_id: "U_CAROL", requester_name: "Carol", currency: "USD", updated_at: thisMonth }), // dropped
+    ];
+    const result = topRequestersPaidThisMonth(tickets);
+    expect(result[0]).toEqual({ requesterUserId: "U_ALICE", requesterName: "Alice", count: 2, amount: 400 });
+    expect(result[1]).toEqual({ requesterUserId: "U_BOB", requesterName: "Bob", count: 1, amount: 200 });
+    expect(result.find((r) => r.requesterUserId === "U_CAROL")).toBeUndefined();
+  });
+
+  it("respects the limit parameter", () => {
+    const now = new Date();
+    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-15T10:00:00Z`;
+    const tickets = Array.from({ length: 12 }, (_, i) =>
+      makeTicket({ tracking_id: `T${i}`, status: "PAID", amount: 100 + i, requester_user_id: `U${i}`, requester_name: `User${i}`, updated_at: thisMonth }),
+    );
+    const result = topRequestersPaidThisMonth(tickets, 5);
+    expect(result).toHaveLength(5);
+  });
+});
+
+describe("computePaidPeriodDelta", () => {
+  it("computes signed percent delta between current and previous month", () => {
+    const now = new Date("2026-05-10T12:00:00Z");
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", amount: 1200, updated_at: "2026-05-05T10:00:00Z" }),
+      makeTicket({ tracking_id: "T2", status: "PAID", amount: 1000, updated_at: "2026-04-15T10:00:00Z" }),
+    ];
+    const d = computePaidPeriodDelta(tickets, now);
+    expect(d.current).toBe(1200);
+    expect(d.previous).toBe(1000);
+    expect(d.percent).toBeCloseTo(20);
+  });
+
+  it("returns null percent when previous month had zero (no baseline)", () => {
+    const now = new Date("2026-05-10T12:00:00Z");
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", amount: 1000, updated_at: "2026-05-05T10:00:00Z" }),
+    ];
+    const d = computePaidPeriodDelta(tickets, now);
+    expect(d.current).toBe(1000);
+    expect(d.previous).toBe(0);
+    expect(d.percent).toBeNull();
+  });
+
+  it("rolls over correctly when current month is January", () => {
+    const now = new Date("2026-01-15T12:00:00Z");
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", amount: 500, updated_at: "2026-01-10T10:00:00Z" }),
+      makeTicket({ tracking_id: "T2", status: "PAID", amount: 1000, updated_at: "2025-12-20T10:00:00Z" }),
+    ];
+    const d = computePaidPeriodDelta(tickets, now);
+    expect(d.current).toBe(500);
+    expect(d.previous).toBe(1000);
+    expect(d.percent).toBeCloseTo(-50);
+  });
+
+  it("ignores non-NGN tickets", () => {
+    const now = new Date("2026-05-10T12:00:00Z");
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", amount: 999999, currency: "USD", updated_at: "2026-05-05T10:00:00Z" }),
+    ];
+    const d = computePaidPeriodDelta(tickets, now);
+    expect(d.current).toBe(0);
+    expect(d.previous).toBe(0);
+  });
+});
+
+describe("findStuckTickets", () => {
+  it("returns non-terminal tickets that haven't been updated in N days", () => {
+    const now = new Date("2026-05-10T12:00:00Z");
+    const tickets = [
+      makeTicket({ tracking_id: "T_OLD", status: "AWAITING_APPROVAL", updated_at: "2026-05-01T10:00:00Z" }), // 9 days
+      makeTicket({ tracking_id: "T_FRESH", status: "AWAITING_APPROVAL", updated_at: "2026-05-08T10:00:00Z" }), // 2 days
+      makeTicket({ tracking_id: "T_PAID", status: "PAID", updated_at: "2026-04-01T10:00:00Z" }), // terminal, ignored
+      makeTicket({ tracking_id: "T_REJECTED", status: "REJECTED", updated_at: "2026-04-01T10:00:00Z" }), // terminal, ignored
+    ];
+    const result = findStuckTickets(tickets, 7, now);
+    expect(result.map((t) => t.tracking_id)).toEqual(["T_OLD"]);
+  });
+
+  it("sorts oldest-first (most stuck first)", () => {
+    const now = new Date("2026-05-10T12:00:00Z");
+    const tickets = [
+      makeTicket({ tracking_id: "T2", status: "AWAITING_PAYMENT", updated_at: "2026-04-25T10:00:00Z" }),
+      makeTicket({ tracking_id: "T1", status: "AWAITING_APPROVAL", updated_at: "2026-04-15T10:00:00Z" }),
+      makeTicket({ tracking_id: "T3", status: "MANUAL_REVIEW", updated_at: "2026-04-30T10:00:00Z" }),
+    ];
+    const result = findStuckTickets(tickets, 7, now);
+    expect(result.map((t) => t.tracking_id)).toEqual(["T1", "T2", "T3"]);
+  });
+
+  it("returns empty when nothing is stuck", () => {
+    const now = new Date("2026-05-10T12:00:00Z");
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "AWAITING_APPROVAL", updated_at: "2026-05-09T10:00:00Z" }),
+    ];
+    expect(findStuckTickets(tickets, 7, now)).toEqual([]);
+  });
+});
+
+describe("computeMedianTimeToPayDays", () => {
+  it("returns the median days between created_at and updated_at across PAID NGN tickets", () => {
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-04T00:00:00Z" }), // 3 days
+      makeTicket({ tracking_id: "T2", status: "PAID", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-06T00:00:00Z" }), // 5 days
+      makeTicket({ tracking_id: "T3", status: "PAID", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-08T00:00:00Z" }), // 7 days
+    ];
+    const median = computeMedianTimeToPayDays(tickets);
+    expect(median).toBe(5);
+  });
+
+  it("averages two middle values when count is even", () => {
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-02T00:00:00Z" }), // 1
+      makeTicket({ tracking_id: "T2", status: "PAID", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-04T00:00:00Z" }), // 3
+      makeTicket({ tracking_id: "T3", status: "PAID", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-06T00:00:00Z" }), // 5
+      makeTicket({ tracking_id: "T4", status: "PAID", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-08T00:00:00Z" }), // 7
+    ];
+    expect(computeMedianTimeToPayDays(tickets)).toBe(4); // (3 + 5) / 2
+  });
+
+  it("returns null when there are no PAID tickets to measure", () => {
+    expect(computeMedianTimeToPayDays([])).toBeNull();
+  });
+
+  it("ignores non-NGN PAID tickets", () => {
+    const tickets = [
+      makeTicket({ tracking_id: "T1", status: "PAID", currency: "USD", created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-02T00:00:00Z" }),
+    ];
+    expect(computeMedianTimeToPayDays(tickets)).toBeNull();
+  });
+
+  it("respects lookbackCount and uses the most recent N PAID tickets", () => {
+    const tickets = Array.from({ length: 100 }, (_, i) =>
+      makeTicket({
+        tracking_id: `T${i}`,
+        status: "PAID",
+        created_at: "2026-05-01T00:00:00Z",
+        // older tickets have an artificially huge gap; only the recent
+        // ones (small i, but bigger updated_at) should be considered.
+        updated_at: `2026-${String((i % 9) + 1).padStart(2, "0")}-01T00:00:00Z`,
+      }),
+    );
+    const median = computeMedianTimeToPayDays(tickets, 5);
+    expect(median).not.toBeNull();
   });
 });
 
