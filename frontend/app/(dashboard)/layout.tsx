@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 
 import { auth, signOut } from "@/auth";
@@ -21,8 +22,15 @@ export default async function DashboardLayout({
           horizontal space on phones, so we fall back to a compact strip. */}
       <header className="border-b border-zinc-200 bg-white md:hidden dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center justify-between gap-4 px-4 py-3">
-          <Link href="/" className="text-sm font-semibold tracking-tight">
-            Curacel Expense
+          <Link href="/" className="flex items-center gap-2">
+            <Image
+              src="/curacel-logo.png"
+              alt="Curacel"
+              width={28}
+              height={28}
+              priority
+            />
+            <span className="text-sm font-semibold tracking-tight">Expense</span>
           </Link>
           <nav className="flex items-center gap-4 text-sm">
             <NavLink href="/" variant="topbar">Home</NavLink>
@@ -35,9 +43,18 @@ export default async function DashboardLayout({
       {/* Desktop sidebar — fixed-position rail. md:ml-64 on <main> below
           leaves space for it. */}
       <aside className="hidden md:fixed md:inset-y-0 md:left-0 md:flex md:w-64 md:flex-col md:border-r md:border-zinc-200 md:bg-white md:px-4 md:py-6 dark:md:border-zinc-800 dark:md:bg-zinc-950">
-        <Link href="/" className="px-3">
-          <p className="text-sm font-semibold tracking-tight">Curacel</p>
-          <p className="text-xs text-zinc-500">Expense Dashboard</p>
+        <Link href="/" className="flex items-center gap-3 px-3">
+          <Image
+            src="/curacel-logo.png"
+            alt="Curacel"
+            width={36}
+            height={36}
+            priority
+          />
+          <div>
+            <p className="text-sm font-semibold tracking-tight leading-tight">Curacel</p>
+            <p className="text-xs text-zinc-500 leading-tight">Expense Dashboard</p>
+          </div>
         </Link>
 
         <nav className="mt-8 flex flex-col gap-1">
