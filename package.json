@@ -8,7 +8,8 @@
     "node": ">=20.0.0"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "frontend"
   ],
   "scripts": {
     "build:shared": "npm run build -w @curacel/shared",
