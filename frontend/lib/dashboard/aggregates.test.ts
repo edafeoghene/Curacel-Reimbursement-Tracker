@@ -278,6 +278,67 @@ describe("computePaidPeriodDelta", () => {
     expect(d.current).toBe(0);
     expect(d.previous).toBe(0);
   });
+
+  it("treats 23:30 UTC May 31 (= 00:30 June 1 Lagos) as June, not May", () => {
+    // The point of switching from UTC- to Lagos-bucketing. A ticket paid
+    // late in the day on May 31 in Lagos is *June* money for the FM.
+    const now = new Date("2026-06-15T12:00:00Z"); // Lagos: June 15
+    const tickets = [
+      makeTicket({
+        tracking_id: "T-boundary",
+        status: "PAID",
+        amount: 5000,
+        updated_at: "2026-05-31T23:30:00Z", // Lagos: 2026-06-01T00:30
+      }),
+    ];
+    const d = computePaidPeriodDelta(tickets, now);
+    expect(d.current).toBe(5000); // counts toward June
+    expect(d.previous).toBe(0); // not May
+  });
+});
+
+describe("computeKpis (Lagos timezone)", () => {
+  it("buckets paidThisMonth by Africa/Lagos local month, not UTC", () => {
+    // Same boundary scenario as the period-delta test: a UTC-bucketed
+    // implementation would file this ticket under May; Lagos-bucketing
+    // correctly files it under June.
+    const now = new Date("2026-06-15T12:00:00Z");
+    const tickets = [
+      makeTicket({
+        tracking_id: "T-boundary",
+        status: "PAID",
+        amount: 1234,
+        updated_at: "2026-05-31T23:30:00Z",
+      }),
+    ];
+    const k = computeKpis(tickets, now);
+    expect(k.paidThisMonth.count).toBe(1);
+    expect(k.paidThisMonth.amount).toBe(1234);
+  });
+
+  it("does NOT count a ticket paid 23:30 UTC May 31 as May either (it's June Lagos)", () => {
+    const now = new Date("2026-05-31T23:45:00Z"); // Lagos: 2026-06-01T00:45
+    const tickets = [
+      makeTicket({
+        tracking_id: "T-boundary",
+        status: "PAID",
+        amount: 1234,
+        updated_at: "2026-05-15T10:00:00Z", // safely mid-May Lagos
+      }),
+      makeTicket({
+        tracking_id: "T-boundary-late",
+        status: "PAID",
+        amount: 5000,
+        updated_at: "2026-05-31T23:30:00Z", // June 1 in Lagos
+      }),
+    ];
+    const k = computeKpis(tickets, now);
+    // "now" is June 1 in Lagos, so "this month" = June.
+    // T-boundary (mid-May) → not in this month.
+    // T-boundary-late (June 1 Lagos) → in this month.
+    expect(k.paidThisMonth.count).toBe(1);
+    expect(k.paidThisMonth.amount).toBe(5000);
+  });
 });
 
 describe("findStuckTickets", () => {

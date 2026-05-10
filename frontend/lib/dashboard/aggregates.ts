@@ -86,31 +86,65 @@ function isNgn(t: Ticket): boolean {
   return t.currency === PRIMARY_CURRENCY;
 }
 
-/** Returns true iff `iso` falls in the current UTC month. */
-function isInCurrentMonth(iso: string): boolean {
-  if (!iso) return false;
-  const now = new Date();
-  const prefix = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-  return iso.startsWith(prefix);
+// ---------- Lagos / WAT timezone helpers ----------
+//
+// Curacel operates in Lagos (Africa/Lagos = UTC+1, no DST). The bot
+// writes timestamps as ISO-8601 UTC; if we bucket those timestamps by
+// the UTC calendar month, "Paid this month" KPI rolls over ~1 hour late
+// on the 1st (a ticket paid 23:30 UTC on May 31 is 00:30 June 1 Lagos,
+// but a UTC-bucket would file it under May). For financial-display
+// correctness we bucket months by Africa/Lagos local time instead.
+//
+// Implementation: shift the Date forward by 1h, then read its UTC
+// year/month. Pure offset arithmetic — no DST table, no Intl.
+
+const LAGOS_OFFSET_MS = 60 * 60 * 1000; // WAT = UTC+1, year-round.
+
+function toLagos(d: Date): Date {
+  return new Date(d.getTime() + LAGOS_OFFSET_MS);
 }
 
-function isInCurrentYear(iso: string): boolean {
-  if (!iso) return false;
-  const prefix = String(new Date().getUTCFullYear());
-  return iso.startsWith(prefix);
+/** YYYY-MM prefix of `d` in Africa/Lagos local time. */
+export function lagosMonthPrefix(d: Date): string {
+  const l = toLagos(d);
+  return `${l.getUTCFullYear()}-${String(l.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-/** YYYY-MM prefix for `now`'s previous calendar month, accounting for January. */
-function previousMonthPrefix(now: Date): string {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth(); // 0-indexed
+/** YYYY-MM prefix of the calendar month before `d` in Lagos. */
+function previousLagosMonthPrefix(d: Date): string {
+  const l = toLagos(d);
+  const y = l.getUTCFullYear();
+  const m = l.getUTCMonth();
   const py = m === 0 ? y - 1 : y;
   const pm = m === 0 ? 12 : m;
   return `${py}-${String(pm).padStart(2, "0")}`;
 }
 
-function isInMonth(iso: string, prefix: string): boolean {
-  return Boolean(iso) && iso.startsWith(prefix);
+/** YYYY prefix of `d` in Africa/Lagos local time. */
+function lagosYearPrefix(d: Date): string {
+  return String(toLagos(d).getUTCFullYear());
+}
+
+function isInLagosMonth(iso: string, prefix: string): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return false;
+  return lagosMonthPrefix(d) === prefix;
+}
+
+function isInLagosYear(iso: string, prefix: string): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return false;
+  return lagosYearPrefix(d) === prefix;
+}
+
+function isInCurrentLagosMonth(iso: string, now: Date = new Date()): boolean {
+  return isInLagosMonth(iso, lagosMonthPrefix(now));
+}
+
+function isInCurrentLagosYear(iso: string, now: Date = new Date()): boolean {
+  return isInLagosYear(iso, lagosYearPrefix(now));
 }
 
 /**
@@ -133,7 +167,10 @@ function shortWeekLabel(weekStart: string): string {
 
 // ---------- aggregations ----------
 
-export function computeKpis(tickets: readonly Ticket[]): DashboardKpis {
+export function computeKpis(
+  tickets: readonly Ticket[],
+  now: Date = new Date(),
+): DashboardKpis {
   const empty = (): KpiBucket => ({ count: 0, amount: 0 });
   const out: DashboardKpis = {
     awaitingApproval: empty(),
@@ -158,11 +195,11 @@ export function computeKpis(tickets: readonly Ticket[]): DashboardKpis {
         out.manualReview.amount += t.amount;
         break;
       case "PAID":
-        if (isInCurrentMonth(t.updated_at)) {
+        if (isInCurrentLagosMonth(t.updated_at, now)) {
           out.paidThisMonth.count += 1;
           out.paidThisMonth.amount += t.amount;
         }
-        if (isInCurrentYear(t.updated_at)) {
+        if (isInCurrentLagosYear(t.updated_at, now)) {
           out.paidYTD.count += 1;
           out.paidYTD.amount += t.amount;
         }
@@ -231,12 +268,13 @@ export function weeklyPaid(
 export function topCategoriesPaidThisMonth(
   tickets: readonly Ticket[],
   limit = 8,
+  now: Date = new Date(),
 ): CategoryTotal[] {
   const byCategory = new Map<string, CategoryTotal>();
   for (const t of tickets) {
     if (!isNgn(t)) continue;
     if (t.status !== "PAID") continue;
-    if (!isInCurrentMonth(t.updated_at)) continue;
+    if (!isInCurrentLagosMonth(t.updated_at, now)) continue;
     const cat = t.category?.trim() || "uncategorized";
     const entry = byCategory.get(cat);
     if (entry) {
@@ -256,12 +294,13 @@ export function topCategoriesPaidThisMonth(
 export function topRequestersPaidThisMonth(
   tickets: readonly Ticket[],
   limit = 8,
+  now: Date = new Date(),
 ): RequesterTotal[] {
   const byUser = new Map<string, RequesterTotal>();
   for (const t of tickets) {
     if (!isNgn(t)) continue;
     if (t.status !== "PAID") continue;
-    if (!isInCurrentMonth(t.updated_at)) continue;
+    if (!isInCurrentLagosMonth(t.updated_at, now)) continue;
     const existing = byUser.get(t.requester_user_id);
     if (existing) {
       existing.count += 1;
@@ -290,15 +329,15 @@ export function computePaidPeriodDelta(
   tickets: readonly Ticket[],
   now: Date = new Date(),
 ): PeriodDelta {
-  const currentPrefix = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-  const prevPrefix = previousMonthPrefix(now);
+  const currentPrefix = lagosMonthPrefix(now);
+  const prevPrefix = previousLagosMonthPrefix(now);
   let current = 0;
   let previous = 0;
   for (const t of tickets) {
     if (!isNgn(t)) continue;
     if (t.status !== "PAID") continue;
-    if (isInMonth(t.updated_at, currentPrefix)) current += t.amount;
-    else if (isInMonth(t.updated_at, prevPrefix)) previous += t.amount;
+    if (isInLagosMonth(t.updated_at, currentPrefix)) current += t.amount;
+    else if (isInLagosMonth(t.updated_at, prevPrefix)) previous += t.amount;
   }
   const percent = previous === 0 ? null : ((current - previous) / previous) * 100;
   return { current, previous, percent };
