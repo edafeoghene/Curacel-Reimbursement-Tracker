@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 
 import { auth, signOut } from "@/auth";
 import { SIDEBAR_COOKIE, SidebarShell } from "@/components/sidebar-shell";
+import { parseTheme, THEME_COOKIE } from "@/lib/theme";
 
 export default async function DashboardLayout({
   children,
@@ -14,6 +15,7 @@ export default async function DashboardLayout({
   // missing or anything other than the explicit "0" closed marker.
   const cookieStore = await cookies();
   const initialOpen = cookieStore.get(SIDEBAR_COOKIE)?.value !== "0";
+  const initialTheme = parseTheme(cookieStore.get(THEME_COOKIE)?.value);
 
   async function handleSignOut() {
     "use server";
@@ -25,6 +27,7 @@ export default async function DashboardLayout({
       userEmail={session?.user?.email ?? null}
       signOutAction={handleSignOut}
       initialOpen={initialOpen}
+      initialTheme={initialTheme}
     >
       {children}
     </SidebarShell>

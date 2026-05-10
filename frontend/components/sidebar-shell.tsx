@@ -4,7 +4,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 
+import { type Theme } from "@/lib/theme";
+
 import { NavLink } from "./nav-link";
+import { ThemeToggle } from "./theme-toggle";
 
 export const SIDEBAR_COOKIE = "curacel-sidebar-open";
 
@@ -12,10 +15,11 @@ interface Props {
   userEmail: string | null;
   signOutAction: () => Promise<void>;
   initialOpen: boolean;
+  initialTheme: Theme;
   children: React.ReactNode;
 }
 
-export function SidebarShell({ userEmail, signOutAction, initialOpen, children }: Props) {
+export function SidebarShell({ userEmail, signOutAction, initialOpen, initialTheme, children }: Props) {
   const [open, setOpen] = useState(initialOpen);
 
   function toggle() {
@@ -98,6 +102,9 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, children }
         </nav>
 
         <div className="mt-auto space-y-3 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+          <div className="px-3">
+            <ThemeToggle initialTheme={initialTheme} />
+          </div>
           <p
             className="truncate px-3 text-xs text-zinc-600 dark:text-zinc-400"
             title={userEmail ?? "unknown"}
