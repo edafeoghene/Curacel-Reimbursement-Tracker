@@ -1,0 +1,351 @@
+import Link from "next/link";
+
+import { TICKET_STATUSES, type Status, type Ticket } from "@curacel/shared";
+
+import { listAllTickets, type TicketListFilters } from "@/lib/sheets/tickets";
+
+// SSR + 30s revalidation: tickets data is small and rarely-changing, so
+// SSR with revalidate is much simpler than client-side polling. The
+// "Refresh" button below also does an explicit revalidatePath.
+export const revalidate = 30;
+
+export const metadata = { title: "Tickets — Curacel Expense Dashboard" };
+
+const PAGE_SIZE = 20;
+
+interface RawSearchParams {
+  status?: string | string[];
+  requester?: string | string[];
+  route?: string | string[];
+  currency?: string | string[];
+  from?: string | string[];
+  to?: string | string[];
+  page?: string | string[];
+}
+
+function firstString(v: string | string[] | undefined): string | undefined {
+  if (Array.isArray(v)) return v[0];
+  return v;
+}
+
+function isStatus(v: string | undefined): v is Status {
+  return v !== undefined && (TICKET_STATUSES as readonly string[]).includes(v);
+}
+
+function parseFilters(raw: RawSearchParams): TicketListFilters {
+  const status = firstString(raw.status);
+  return {
+    status: isStatus(status) ? status : undefined,
+    requesterUserId: firstString(raw.requester) || undefined,
+    routeId: firstString(raw.route) || undefined,
+    currency: firstString(raw.currency) || undefined,
+    createdFrom: firstString(raw.from) || undefined,
+    createdTo: firstString(raw.to) || undefined,
+  };
+}
+
+function parsePage(raw: RawSearchParams): number {
+  const p = Number(firstString(raw.page) ?? 1);
+  return Number.isFinite(p) && p >= 1 ? Math.floor(p) : 1;
+}
+
+function buildQueryString(params: Record<string, string | undefined>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v && v.length > 0) sp.set(k, v);
+  }
+  const s = sp.toString();
+  return s.length === 0 ? "" : `?${s}`;
+}
+
+function pageUrl(filters: TicketListFilters, page: number): string {
+  return `/tickets${buildQueryString({
+    status: filters.status,
+    requester: filters.requesterUserId,
+    route: filters.routeId,
+    currency: filters.currency,
+    from: filters.createdFrom,
+    to: filters.createdTo,
+    page: page > 1 ? String(page) : undefined,
+  })}`;
+}
+
+async function refreshAction() {
+  "use server";
+  const { revalidatePath } = await import("next/cache");
+  revalidatePath("/tickets");
+}
+
+export default async function TicketsPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
+  const raw = await searchParams;
+  const filters = parseFilters(raw);
+  const page = parsePage(raw);
+
+  const all = await listAllTickets(filters);
+  const totalPages = Math.max(1, Math.ceil(all.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * PAGE_SIZE;
+  const slice = all.slice(start, start + PAGE_SIZE);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Tickets</h1>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            {all.length} {all.length === 1 ? "ticket" : "tickets"} match.
+          </p>
+        </div>
+        <form action={refreshAction}>
+          <button
+            type="submit"
+            className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900 transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900"
+          >
+            Refresh
+          </button>
+        </form>
+      </div>
+
+      <FiltersForm filters={filters} />
+
+      {slice.length === 0 ? (
+        <EmptyState hasFilters={hasAnyFilter(filters)} />
+      ) : (
+        <>
+          <TicketsTable rows={slice} />
+          <Pagination
+            page={safePage}
+            totalPages={totalPages}
+            filters={filters}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+function hasAnyFilter(f: TicketListFilters): boolean {
+  return Boolean(
+    f.status || f.requesterUserId || f.routeId || f.currency || f.createdFrom || f.createdTo,
+  );
+}
+
+function FiltersForm({ filters }: { filters: TicketListFilters }) {
+  return (
+    <form
+      method="GET"
+      action="/tickets"
+      className="grid grid-cols-2 gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900 sm:grid-cols-3 lg:grid-cols-6"
+    >
+      <Field label="Status">
+        <select
+          name="status"
+          defaultValue={filters.status ?? ""}
+          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+        >
+          <option value="">All</option>
+          {TICKET_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Requester (user id)">
+        <input
+          type="text"
+          name="requester"
+          defaultValue={filters.requesterUserId ?? ""}
+          placeholder="U0…"
+          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+        />
+      </Field>
+      <Field label="Route">
+        <input
+          type="text"
+          name="route"
+          defaultValue={filters.routeId ?? ""}
+          placeholder="low-ngn"
+          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+        />
+      </Field>
+      <Field label="Currency">
+        <input
+          type="text"
+          name="currency"
+          defaultValue={filters.currency ?? ""}
+          placeholder="NGN"
+          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+        />
+      </Field>
+      <Field label="From (created)">
+        <input
+          type="date"
+          name="from"
+          defaultValue={filters.createdFrom ?? ""}
+          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+        />
+      </Field>
+      <Field label="To (created)">
+        <input
+          type="date"
+          name="to"
+          defaultValue={filters.createdTo ?? ""}
+          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+        />
+      </Field>
+      <div className="col-span-full flex items-center gap-2">
+        <button
+          type="submit"
+          className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+        >
+          Apply filters
+        </button>
+        <Link
+          href="/tickets"
+          className="text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
+        >
+          Clear
+        </Link>
+      </div>
+    </form>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function TicketsTable({ rows }: { rows: Ticket[] }) {
+  return (
+    <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+      <table className="w-full text-sm">
+        <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
+          <tr>
+            <th className="px-4 py-2 font-medium">Tracking ID</th>
+            <th className="px-4 py-2 font-medium">Created</th>
+            <th className="px-4 py-2 font-medium">Requester</th>
+            <th className="px-4 py-2 font-medium">Description</th>
+            <th className="px-4 py-2 text-right font-medium">Amount</th>
+            <th className="px-4 py-2 font-medium">Status</th>
+            <th className="px-4 py-2 font-medium">Route</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+          {rows.map((t) => (
+            <tr key={t.tracking_id} className="bg-white hover:bg-zinc-50 dark:bg-zinc-950 dark:hover:bg-zinc-900">
+              <td className="px-4 py-2 font-mono text-xs">
+                <Link
+                  href={`/tickets/${encodeURIComponent(t.tracking_id)}`}
+                  className="text-zinc-900 hover:underline dark:text-zinc-50"
+                >
+                  {t.tracking_id}
+                </Link>
+              </td>
+              <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">
+                {formatDate(t.created_at)}
+              </td>
+              <td className="px-4 py-2">{t.requester_name}</td>
+              <td className="max-w-md truncate px-4 py-2">{t.description}</td>
+              <td className="px-4 py-2 text-right font-mono">
+                {t.currency} {t.amount.toLocaleString()}
+              </td>
+              <td className="px-4 py-2">
+                <StatusBadge status={t.status} />
+              </td>
+              <td className="px-4 py-2 font-mono text-xs text-zinc-600 dark:text-zinc-400">
+                {t.route_id}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: Status }) {
+  const tone = STATUS_TONES[status];
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>
+      {status}
+    </span>
+  );
+}
+
+const STATUS_TONES: Record<Status, string> = {
+  SUBMITTED: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  AWAITING_APPROVAL: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  NEEDS_CLARIFICATION: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
+  APPROVED: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
+  AWAITING_PAYMENT: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300",
+  PAID: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+  REJECTED: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+  CANCELLED: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
+  MANUAL_REVIEW: "bg-pink-100 text-pink-800 dark:bg-pink-900/40 dark:text-pink-300",
+};
+
+function formatDate(iso: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toISOString().slice(0, 16).replace("T", " ");
+}
+
+function EmptyState({ hasFilters }: { hasFilters: boolean }) {
+  return (
+    <div className="rounded-md border border-dashed border-zinc-200 p-12 text-center dark:border-zinc-800">
+      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+        {hasFilters
+          ? "No tickets match these filters. Try clearing them or adjusting the date range."
+          : "No tickets in the workbook yet. Submit one in the #expenses Slack channel."}
+      </p>
+    </div>
+  );
+}
+
+function Pagination({
+  page,
+  totalPages,
+  filters,
+}: {
+  page: number;
+  totalPages: number;
+  filters: TicketListFilters;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="text-zinc-600 dark:text-zinc-400">
+        Page {page} of {totalPages}
+      </span>
+      <div className="flex items-center gap-2">
+        {page > 1 ? (
+          <Link
+            href={pageUrl(filters, page - 1)}
+            className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 font-medium text-zinc-900 transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900"
+          >
+            Previous
+          </Link>
+        ) : null}
+        {page < totalPages ? (
+          <Link
+            href={pageUrl(filters, page + 1)}
+            className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 font-medium text-zinc-900 transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900"
+          >
+            Next
+          </Link>
+        ) : null}
+      </div>
+    </div>
+  );
+}
