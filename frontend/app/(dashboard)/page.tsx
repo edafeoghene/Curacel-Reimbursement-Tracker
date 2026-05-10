@@ -201,18 +201,18 @@ export default async function DashboardHome({
         ) : (
           <ul className="mt-4 divide-y divide-zinc-100 text-sm dark:divide-zinc-800">
             {recent.map((t) => (
-              <li key={t.tracking_id} className="flex items-center gap-4 py-2.5">
+              <li key={t.tracking_id} className="flex items-center gap-3 py-2.5 sm:gap-4">
                 <Link
                   href={`/tickets/${encodeURIComponent(t.tracking_id)}`}
-                  className="w-36 shrink-0 font-mono text-xs text-zinc-900 hover:underline dark:text-zinc-50"
+                  className="w-28 shrink-0 truncate font-mono text-xs text-zinc-900 hover:underline sm:w-36 dark:text-zinc-50"
                 >
                   {t.tracking_id}
                 </Link>
-                <span className="hidden w-32 truncate text-zinc-600 dark:text-zinc-400 sm:inline">
+                <span className="hidden w-32 truncate text-zinc-600 md:inline dark:text-zinc-400">
                   {t.requester_name}
                 </span>
-                <span className="flex-1 truncate">{t.description || "—"}</span>
-                <span className="hidden font-mono text-zinc-700 dark:text-zinc-300 md:inline">
+                <span className="flex-1 truncate text-sm">{t.description || "—"}</span>
+                <span className="shrink-0 font-mono text-xs text-zinc-700 sm:text-sm dark:text-zinc-300">
                   {t.currency} {t.amount.toLocaleString()}
                 </span>
                 <StatusBadge status={t.status} />

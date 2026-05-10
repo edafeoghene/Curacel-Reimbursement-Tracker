@@ -28,10 +28,11 @@ export function NavLink({ href, children, variant = "sidebar" }: Props) {
     return (
       <Link
         href={href}
+        aria-current={active ? "page" : undefined}
         className={
           active
-            ? "text-zinc-900 dark:text-zinc-50"
-            : "text-zinc-600 transition hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+            ? "border-b-2 border-zinc-900 pb-0.5 font-semibold text-zinc-900 dark:border-zinc-50 dark:text-zinc-50"
+            : "pb-0.5 text-zinc-600 transition hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
         }
       >
         {children}
@@ -42,6 +43,7 @@ export function NavLink({ href, children, variant = "sidebar" }: Props) {
   return (
     <Link
       href={href}
+      aria-current={active ? "page" : undefined}
       className={
         active
           ? "block rounded-md bg-zinc-100 px-3 py-1.5 text-sm font-medium text-zinc-900 dark:bg-zinc-900 dark:text-zinc-50"

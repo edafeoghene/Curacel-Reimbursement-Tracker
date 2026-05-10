@@ -3,6 +3,7 @@ import Link from "next/link";
 import { TICKET_STATUSES, type Status, type Ticket } from "@curacel/shared";
 
 import { DatePicker } from "@/components/date-picker";
+import { RefreshButton } from "@/components/refresh-button";
 import {
   applyTicketFilters,
   listAllTickets,
@@ -112,12 +113,7 @@ export default async function TicketsPage({
           </p>
         </div>
         <form action={refreshAction}>
-          <button
-            type="submit"
-            className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900 transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900"
-          >
-            Refresh
-          </button>
+          <RefreshButton />
         </form>
       </div>
 
@@ -183,13 +179,18 @@ function FiltersForm({
   routes: string[];
   requesters: RequesterOption[];
 }) {
+  // Explicit grid (not flex-wrap) so the column breakpoints are
+  // predictable and the Apply/Clear buttons land in a known position
+  // at every width. On lg+ the 5 fields share equal-fraction columns
+  // and the buttons take an auto-sized cell at the end of the row;
+  // below lg, the buttons span all columns and sit beneath the fields.
   return (
     <form
       method="GET"
       action="/tickets"
-      className="flex flex-wrap items-end gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900"
+      className="grid grid-cols-1 gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4 sm:grid-cols-2 lg:grid-cols-[repeat(5,minmax(0,1fr))_auto] dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <Field label="Status" className="min-w-[12rem] flex-1">
+      <Field label="Status">
         <select
           name="status"
           defaultValue={filters.status ?? ""}
@@ -203,7 +204,7 @@ function FiltersForm({
           ))}
         </select>
       </Field>
-      <Field label="Requester" className="min-w-[12rem] flex-1">
+      <Field label="Requester">
         <select
           name="requester"
           defaultValue={filters.requesterUserId ?? ""}
@@ -217,7 +218,7 @@ function FiltersForm({
           ))}
         </select>
       </Field>
-      <Field label="Route" className="min-w-[10rem] flex-1">
+      <Field label="Route">
         <select
           name="route"
           defaultValue={filters.routeId ?? ""}
@@ -231,7 +232,7 @@ function FiltersForm({
           ))}
         </select>
       </Field>
-      <Field label="From (created)" className="min-w-[10rem] flex-1">
+      <Field label="From (created)">
         <DatePicker
           name="from"
           defaultValue={filters.createdFrom ?? ""}
@@ -239,7 +240,7 @@ function FiltersForm({
           ariaLabel="Filter by created-from date"
         />
       </Field>
-      <Field label="To (created)" className="min-w-[10rem] flex-1">
+      <Field label="To (created)">
         <DatePicker
           name="to"
           defaultValue={filters.createdTo ?? ""}
@@ -247,19 +248,19 @@ function FiltersForm({
           ariaLabel="Filter by created-to date"
         />
       </Field>
-      <div className="flex items-center gap-2 pb-px">
-        <button
-          type="submit"
-          className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-        >
-          Apply
-        </button>
+      <div className="col-span-full flex items-center justify-end gap-2 sm:col-span-2 lg:col-span-1 lg:self-end lg:pb-px">
         <Link
           href="/tickets"
           className="text-sm text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
         >
           Clear
         </Link>
+        <button
+          type="submit"
+          className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+        >
+          Apply
+        </button>
       </div>
     </form>
   );

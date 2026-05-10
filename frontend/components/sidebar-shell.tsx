@@ -59,6 +59,12 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, children }
         className={`hidden md:fixed md:inset-y-0 md:left-0 md:z-30 md:flex md:w-64 md:flex-col md:border-r md:border-zinc-200 md:bg-white md:px-4 md:py-6 md:transition-transform md:duration-200 dark:md:border-zinc-800 dark:md:bg-zinc-950 ${
           open ? "md:translate-x-0" : "md:-translate-x-full"
         }`}
+        // `inert` (React 19 prop, GA in all modern browsers) removes the
+        // closed-sidebar's children from the keyboard tab order and the
+        // accessibility tree. Stronger than aria-hidden alone: aria-hidden
+        // misleads AT but DOES NOT prevent Tab from landing inside the
+        // hidden region, which is a real ARIA violation.
+        inert={!open}
         aria-hidden={!open}
       >
         <div className="flex items-start justify-between gap-2">

@@ -7,6 +7,7 @@ import {
   type Ticket,
 } from "@curacel/shared";
 
+import { FilePreview } from "@/components/file-preview";
 import { listApprovalsForTicket } from "@/lib/sheets/approvals";
 import { getTicketByTrackingId } from "@/lib/sheets/tickets";
 
@@ -169,16 +170,7 @@ function FileCard({ title, fileId }: { title: string; fileId: string }) {
           Open
         </a>
       </div>
-      {/* Plain <img> is intentional: the proxy returns whatever Slack's
-          mimetype is, which for receipts is usually image/png or image/jpeg.
-          Non-image files (PDF) will fail to render and the user can click
-          "Open" to view in a new tab. */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt={title}
-        className="mt-3 max-h-96 w-full rounded border border-zinc-100 object-contain dark:border-zinc-800"
-      />
+      <FilePreview src={src} alt={title} />
     </div>
   );
 }
