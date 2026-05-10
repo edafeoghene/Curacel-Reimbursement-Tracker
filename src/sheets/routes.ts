@@ -3,7 +3,7 @@
 // Malformed rows fail loudly per PLAN.md §14.
 
 import { dataRange, getSheetsClient } from "./client.js";
-import { ROUTES_HEADERS, TAB_ROUTES } from "./schema.js";
+import { ROUTES_HEADERS, TAB_ROUTES } from "@curacel/shared";
 import type { Route } from "@curacel/shared";
 
 const NUM_COLS = ROUTES_HEADERS.length;

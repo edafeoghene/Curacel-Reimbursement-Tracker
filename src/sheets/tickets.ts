@@ -11,7 +11,7 @@ import {
   headerRange,
 } from "./client.js";
 import { enqueueWrite } from "./queue.js";
-import { TAB_TICKETS, TICKETS_HEADERS } from "./schema.js";
+import { TAB_TICKETS, TICKETS_HEADERS } from "@curacel/shared";
 import type { Status, Ticket } from "@curacel/shared";
 import { isTerminalStatus, TICKET_STATUSES } from "@curacel/shared";
 

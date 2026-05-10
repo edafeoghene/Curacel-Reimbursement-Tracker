@@ -7,7 +7,7 @@ import {
   AUDIT_LOG_HEADERS,
   ROUTES_HEADERS,
   TICKETS_HEADERS,
-} from "../../src/sheets/schema.js";
+} from "@curacel/shared";
 import type {
   Approval,
   AuditLogEntry,

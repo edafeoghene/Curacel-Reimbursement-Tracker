@@ -10,7 +10,7 @@ import {
   headerRange,
 } from "./client.js";
 import { enqueueWrite } from "./queue.js";
-import { APPROVALS_HEADERS, TAB_APPROVALS } from "./schema.js";
+import { APPROVALS_HEADERS, TAB_APPROVALS } from "@curacel/shared";
 import type { Approval, ApprovalDecision } from "@curacel/shared";
 import { APPROVAL_DECISIONS } from "@curacel/shared";
 

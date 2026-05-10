@@ -9,7 +9,7 @@
 
 import "dotenv/config";
 import { getSheetsClient, headerRange } from "./client.js";
-import { ALL_TABS } from "./schema.js";
+import { ALL_TABS } from "@curacel/shared";
 
 type TabAction = "created" | "headers-written" | "ok";
 
