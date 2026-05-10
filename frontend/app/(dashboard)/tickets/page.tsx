@@ -5,6 +5,10 @@ import { TICKET_STATUSES, type Status, type Ticket } from "@curacel/shared";
 import { DatePicker } from "@/components/date-picker";
 import { RefreshButton } from "@/components/refresh-button";
 import {
+  RequesterCombobox,
+  type RequesterOption,
+} from "@/components/requester-combobox";
+import {
   applyTicketFilters,
   listAllTickets,
   type TicketListFilters,
@@ -141,11 +145,6 @@ function hasAnyFilter(f: TicketListFilters): boolean {
   );
 }
 
-interface RequesterOption {
-  userId: string;
-  name: string;
-}
-
 /**
  * Build a sorted (by display name) list of distinct requesters from the
  * full ticket set. When a user_id appears across multiple tickets with
@@ -205,18 +204,11 @@ function FiltersForm({
         </select>
       </Field>
       <Field label="Requester">
-        <select
+        <RequesterCombobox
           name="requester"
+          options={requesters}
           defaultValue={filters.requesterUserId ?? ""}
-          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-        >
-          <option value="">All requesters</option>
-          {requesters.map((r) => (
-            <option key={r.userId} value={r.userId}>
-              {r.name}
-            </option>
-          ))}
-        </select>
+        />
       </Field>
       <Field label="Route">
         <select
