@@ -159,3 +159,52 @@
 ## Open question (re-confirm before merging 1.5)
 
 The state machine's `DM_NEXT_APPROVER` side effect carries an empty-string `approver_user_id` for the non-final APPROVE branch. **Phase 1.5 should refactor** this away (per §1.5.1 above). Confirm before doing so — it's a small `types.ts` + `machine.ts` + `interactivity.ts` cleanup, but it is a cross-cutting change to the side-effect contract.
+
+---
+
+## Audit follow-ups (2026-05-10)
+
+External code audit produced six findings. Three were fixed in-session (ESCALATE_TO_MANUAL_REVIEW state event, widened cancel filter, consolidated `app.message` dispatcher) plus the highest-priority test gap (provider-lock assertion). The remaining items are deferred — captured here so a future session can pick them up without re-deriving the analysis.
+
+### A. File-share watcher does N full sheet scans per FM file upload
+
+In [src/slack/events.ts](./src/slack/events.ts) `processPaymentProofFromFile`: lists all non-terminal tickets, filters to `AWAITING_PAYMENT`, then for each calls `listApprovalsForTicket()`. Five FM screenshots in a thread = 5×(1 + N) full-sheet reads. Fine at current scale; a real concern at ~1000 tickets.
+
+**Fix shape** (~30 min):
+- Add `findSentinelByDmChannel(channel_id): Promise<Approval | null>` to [src/sheets/approvals.ts](./src/sheets/approvals.ts) — single sheet read, filters by `step_number === PAYMENT_STEP_SENTINEL && dm_channel_id === channel`.
+- Or keep a tiny in-memory `Map<dm_channel_id, tracking_id>` populated when the sentinel approval row is written and invalidated when the ticket reaches `PAID`.
+
+The map approach is faster at runtime but adds invalidation logic. The single-read approach is enough for any plausible team size.
+
+### B. Sentinel `step_number = 99` magic value leaking through several files
+
+[src/slack/events.ts](./src/slack/events.ts) `PAYMENT_STEP_SENTINEL = 99` is referenced in `collectStepApproverIds`, `processPaymentProofFromFile`, and the cancel filter (implicit via `decision === "PENDING"`). Works today; will silently break if someone ever configures a 99-step route (theoretical).
+
+**Fix shape** (~2 hours, sheet schema migration):
+- Add `payment_dm_channel_id: string | null` and `payment_dm_message_ts: string | null` to the `Ticket` type.
+- Update bootstrap to add the columns; update [src/sheets/tickets.ts](./src/sheets/tickets.ts) `rowToTicket` / `ticketToRow` to include them.
+- Replace sentinel-row append in the final-approve branch with `updateTicket(..., { payment_dm_channel_id, payment_dm_message_ts })`.
+- Replace sentinel-row reads with ticket-field reads.
+- Drop `PAYMENT_STEP_SENTINEL` and related branches.
+
+Migration: existing in-flight tickets need their sentinel rows back-filled into the new columns. One-shot migration script, or accept manual re-Mark-as-Paid.
+
+### C. Test coverage gap on the bigger files
+
+These have zero test files; their business logic is exercised only by end-to-end Slack runs:
+- [src/slack/interactivity.ts](./src/slack/interactivity.ts) — modal-submit auth, route-lost recovery, sentinel handling, multi-step advance ticket-patch logic
+- [src/sheets/tickets.ts](./src/sheets/tickets.ts) — optimistic concurrency + RowVersionConflict retry behavior
+- [src/sheets/approvals.ts](./src/sheets/approvals.ts) — CRUD with mocked sheets client
+- [src/sheets/audit.ts](./src/sheets/audit.ts), [src/sheets/bootstrap.ts](./src/sheets/bootstrap.ts), [src/sheets/client.ts](./src/sheets/client.ts) — initialization paths
+- [src/slack/files.ts](./src/slack/files.ts) — auth + 20 MB cap
+
+The provider-lock test (audit's most security-critical item) is in place at [tests/llm/client.test.ts](./tests/llm/client.test.ts).
+
+**Best next slice** (~3-4 hours): tickets.ts retry behavior. Mock the sheets client to return a conflicting `row_version` on the first read, then a fresh value on the retry. Same setup unlocks tests for the rest of `sheets/`.
+
+Modal-submit handler tests for interactivity.ts require a Bolt-shaped harness — high plumbing cost (~1 day for the suite). Defer until a regression actually bites.
+
+### Decisions skipped (and why)
+
+- **Audit said `routeToManualReview` violates the rule** by writing `status: "MANUAL_REVIEW"` on creation. Not fixed — interpreted the rule pragmatically: "no code path may CHANGE status without going through `transition()`". Creation has no prior state; there's nothing to transition from. The audit log there already uses `TICKET_CREATED` + `LLM_FAILED`, no fake `STATE_TRANSITION` entry. Keeping the rule as "transitions only".
+- **Audit suggested cancel should update every non-terminal approval row's DM** — current fix only widens the filter to include `CLARIFICATION_REQUESTED` (and keeps `PENDING`). `DELEGATED` rows already had their DMs replaced with "Delegated to <@new>"; re-editing them is redundant. `APPROVED` / `REJECTED` rows are already terminal for the row's own DM lifecycle.
