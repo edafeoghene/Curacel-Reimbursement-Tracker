@@ -2,7 +2,12 @@ import Link from "next/link";
 
 import { TICKET_STATUSES, type Status, type Ticket } from "@curacel/shared";
 
-import { listAllTickets, type TicketListFilters } from "@/lib/sheets/tickets";
+import { DatePicker } from "@/components/date-picker";
+import {
+  applyTicketFilters,
+  listAllTickets,
+  type TicketListFilters,
+} from "@/lib/sheets/tickets";
 
 // SSR + 30s revalidation: tickets data is small and rarely-changing, so
 // SSR with revalidate is much simpler than client-side polling. The
@@ -17,7 +22,6 @@ interface RawSearchParams {
   status?: string | string[];
   requester?: string | string[];
   route?: string | string[];
-  currency?: string | string[];
   from?: string | string[];
   to?: string | string[];
   page?: string | string[];
@@ -38,7 +42,6 @@ function parseFilters(raw: RawSearchParams): TicketListFilters {
     status: isStatus(status) ? status : undefined,
     requesterUserId: firstString(raw.requester) || undefined,
     routeId: firstString(raw.route) || undefined,
-    currency: firstString(raw.currency) || undefined,
     createdFrom: firstString(raw.from) || undefined,
     createdTo: firstString(raw.to) || undefined,
   };
@@ -63,7 +66,6 @@ function pageUrl(filters: TicketListFilters, page: number): string {
     status: filters.status,
     requester: filters.requesterUserId,
     route: filters.routeId,
-    currency: filters.currency,
     from: filters.createdFrom,
     to: filters.createdTo,
     page: page > 1 ? String(page) : undefined,
@@ -85,7 +87,15 @@ export default async function TicketsPage({
   const filters = parseFilters(raw);
   const page = parsePage(raw);
 
-  const all = await listAllTickets(filters);
+  // Single Sheets read; we filter for display in JS AND derive the
+  // distinct-route list for the dropdown from the same dataset. Avoids
+  // a second sheet read for the route list.
+  const everything = await listAllTickets();
+  const all = applyTicketFilters(everything, filters);
+  const distinctRoutes = Array.from(
+    new Set(everything.map((t) => t.route_id).filter((r): r is string => Boolean(r))),
+  ).sort();
+
   const totalPages = Math.max(1, Math.ceil(all.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const start = (safePage - 1) * PAGE_SIZE;
@@ -110,7 +120,7 @@ export default async function TicketsPage({
         </form>
       </div>
 
-      <FiltersForm filters={filters} />
+      <FiltersForm filters={filters} routes={distinctRoutes} />
 
       {slice.length === 0 ? (
         <EmptyState hasFilters={hasAnyFilter(filters)} />
@@ -130,18 +140,24 @@ export default async function TicketsPage({
 
 function hasAnyFilter(f: TicketListFilters): boolean {
   return Boolean(
-    f.status || f.requesterUserId || f.routeId || f.currency || f.createdFrom || f.createdTo,
+    f.status || f.requesterUserId || f.routeId || f.createdFrom || f.createdTo,
   );
 }
 
-function FiltersForm({ filters }: { filters: TicketListFilters }) {
+function FiltersForm({
+  filters,
+  routes,
+}: {
+  filters: TicketListFilters;
+  routes: string[];
+}) {
   return (
     <form
       method="GET"
       action="/tickets"
-      className="grid grid-cols-2 gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900 sm:grid-cols-3 lg:grid-cols-6"
+      className="flex flex-wrap items-end gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <Field label="Status">
+      <Field label="Status" className="min-w-[12rem] flex-1">
         <select
           name="status"
           defaultValue={filters.status ?? ""}
@@ -155,7 +171,7 @@ function FiltersForm({ filters }: { filters: TicketListFilters }) {
           ))}
         </select>
       </Field>
-      <Field label="Requester (user id)">
+      <Field label="Requester (user id)" className="min-w-[12rem] flex-1">
         <input
           type="text"
           name="requester"
@@ -164,46 +180,42 @@ function FiltersForm({ filters }: { filters: TicketListFilters }) {
           className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
         />
       </Field>
-      <Field label="Route">
-        <input
-          type="text"
+      <Field label="Route" className="min-w-[10rem] flex-1">
+        <select
           name="route"
           defaultValue={filters.routeId ?? ""}
-          placeholder="low-ngn"
           className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-        />
+        >
+          <option value="">All routes</option>
+          {routes.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
       </Field>
-      <Field label="Currency">
-        <input
-          type="text"
-          name="currency"
-          defaultValue={filters.currency ?? ""}
-          placeholder="NGN"
-          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-        />
-      </Field>
-      <Field label="From (created)">
-        <input
-          type="date"
+      <Field label="From (created)" className="min-w-[10rem] flex-1">
+        <DatePicker
           name="from"
           defaultValue={filters.createdFrom ?? ""}
-          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+          placeholder="Any date"
+          ariaLabel="Filter by created-from date"
         />
       </Field>
-      <Field label="To (created)">
-        <input
-          type="date"
+      <Field label="To (created)" className="min-w-[10rem] flex-1">
+        <DatePicker
           name="to"
           defaultValue={filters.createdTo ?? ""}
-          className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
+          placeholder="Any date"
+          ariaLabel="Filter by created-to date"
         />
       </Field>
-      <div className="col-span-full flex items-center gap-2">
+      <div className="flex items-center gap-2 pb-px">
         <button
           type="submit"
           className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
-          Apply filters
+          Apply
         </button>
         <Link
           href="/tickets"
@@ -216,9 +228,17 @@ function FiltersForm({ filters }: { filters: TicketListFilters }) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <label className="flex flex-col gap-1 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+    <label className={`flex flex-col gap-1 text-xs font-medium text-zinc-600 dark:text-zinc-400 ${className ?? ""}`}>
       <span>{label}</span>
       {children}
     </label>
