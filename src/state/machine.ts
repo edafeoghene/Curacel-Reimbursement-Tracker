@@ -9,8 +9,8 @@ import type {
   TransitionResult,
   SideEffect,
   Status,
-} from "../types.js";
-import { isTerminalStatus } from "../types.js";
+} from "@curacel/shared";
+import { isTerminalStatus } from "@curacel/shared";
 
 /**
  * Apply a state event to a ticket and produce the next status + side effects.

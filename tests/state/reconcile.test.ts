@@ -4,7 +4,7 @@ import {
   isNonTerminal,
   partitionForReconciliation,
 } from "../../src/state/reconcile.js";
-import type { Ticket, Status } from "../../src/types.js";
+import type { Ticket, Status } from "@curacel/shared";
 
 function makeTicket(status: Status, tracking_id: string): Ticket {
   return {

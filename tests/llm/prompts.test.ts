@@ -4,7 +4,7 @@ import {
   CLASSIFIER_CATEGORIES,
   CLASSIFIER_SYSTEM_PROMPT,
 } from "../../src/llm/prompts.js";
-import type { ClassifyInput } from "../../src/types.js";
+import type { ClassifyInput } from "@curacel/shared";
 
 describe("CLASSIFIER_SYSTEM_PROMPT", () => {
   it("mentions every category from the enum", () => {

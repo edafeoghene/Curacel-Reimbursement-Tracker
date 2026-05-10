@@ -9,7 +9,7 @@ import {
   ClassifierParseError,
   extractJsonPayload,
 } from "../../src/llm/classify.js";
-import type { ClassifyInput } from "../../src/types.js";
+import type { ClassifyInput } from "@curacel/shared";
 
 const baseInput: ClassifyInput = {
   text: "Office laptop repair, ₦15,000",

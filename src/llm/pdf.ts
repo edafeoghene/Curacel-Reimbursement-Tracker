@@ -12,7 +12,7 @@
 
 import { pdfToPng } from "pdf-to-png-converter";
 
-import type { ClassifierImage } from "../types.js";
+import type { ClassifierImage } from "@curacel/shared";
 
 export class PdfExtractFailed extends Error {
   constructor(message: string, public readonly cause?: unknown) {

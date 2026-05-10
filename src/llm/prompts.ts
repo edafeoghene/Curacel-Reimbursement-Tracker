@@ -11,7 +11,7 @@
 // task, the rules, and the schema. That's it.
 
 import type OpenAI from "openai";
-import type { ClassifyInput } from "../types.js";
+import type { ClassifyInput } from "@curacel/shared";
 
 export const CLASSIFIER_CATEGORIES = [
   "transport",

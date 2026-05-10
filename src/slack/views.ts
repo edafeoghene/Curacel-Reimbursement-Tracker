@@ -17,7 +17,7 @@
 // rides on `private_metadata` so the submit handler doesn't depend on a
 // stale button value.
 
-import type { Ticket } from "../types.js";
+import type { Ticket } from "@curacel/shared";
 
 export type Block = Record<string, unknown>;
 

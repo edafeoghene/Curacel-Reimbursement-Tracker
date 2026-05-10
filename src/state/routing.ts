@@ -5,7 +5,7 @@
 // order they appear in the `routes` tab. This function MUST preserve that
 // order — first match wins so ops can rely on row order to express priority.
 
-import type { Route } from "../types.js";
+import type { Route } from "@curacel/shared";
 
 /**
  * Return the first route from `routes` that matches the (amount, currency,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveRoute } from "../../src/state/routing.js";
-import type { Route } from "../../src/types.js";
+import type { Route } from "@curacel/shared";
 
 const NGN_ROUTES: Route[] = [
   {

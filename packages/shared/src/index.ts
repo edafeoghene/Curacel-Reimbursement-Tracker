@@ -1,4 +1,4 @@
-// Shared type contract. Every module in this codebase imports from here.
+// Shared type contract. Bot and frontend both import from here.
 // If a type doesn't fit a sheet column or a state transition, it doesn't go here.
 
 // ---------- Sentinels ----------

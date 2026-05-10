@@ -12,8 +12,8 @@ import {
 } from "./client.js";
 import { enqueueWrite } from "./queue.js";
 import { TAB_TICKETS, TICKETS_HEADERS } from "./schema.js";
-import type { Status, Ticket } from "../types.js";
-import { isTerminalStatus, TICKET_STATUSES } from "../types.js";
+import type { Status, Ticket } from "@curacel/shared";
+import { isTerminalStatus, TICKET_STATUSES } from "@curacel/shared";
 
 export class RowVersionConflict extends Error {
   constructor(

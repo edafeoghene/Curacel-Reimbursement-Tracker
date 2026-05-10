@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getSheetsClient, headerRange } from "./client.js";
 import { enqueueWrite } from "./queue.js";
 import { AUDIT_LOG_HEADERS, TAB_AUDIT_LOG } from "./schema.js";
-import type { AuditLogEntry } from "../types.js";
+import type { AuditLogEntry } from "@curacel/shared";
 
 const NUM_COLS = AUDIT_LOG_HEADERS.length;
 

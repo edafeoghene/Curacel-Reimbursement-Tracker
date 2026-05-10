@@ -2,7 +2,7 @@
 // Header arrays here MUST match the field order in src/types.ts.
 // CRUD modules import these constants — never hard-code header arrays elsewhere.
 
-import type { Ticket, Approval, AuditLogEntry, RouteRow } from "../types.js";
+import type { Ticket, Approval, AuditLogEntry, RouteRow } from "@curacel/shared";
 
 // The `satisfies` clauses below are compile-time guards: if a field is renamed
 // in src/types.ts the corresponding header array will fail to typecheck.

@@ -28,7 +28,7 @@ import {
   REJECT_REASON_BLOCK_ID,
   rejectionReasonModal,
 } from "../../src/slack/views.js";
-import type { Ticket } from "../../src/types.js";
+import type { Ticket } from "@curacel/shared";
 
 function makeTicket(overrides: Partial<Ticket> = {}): Ticket {
   return {

@@ -15,7 +15,7 @@ import {
 } from "../sheets/approvals.js";
 import { getTicketByTrackingId, updateTicket } from "../sheets/tickets.js";
 import { transition } from "../state/machine.js";
-import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
+import { AUDIT_EVENTS, type Approval, type Ticket } from "@curacel/shared";
 
 import { safeAudit } from "../sheets/audit.js";
 import { postFeedLine } from "./feed.js";

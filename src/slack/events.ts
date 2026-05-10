@@ -37,7 +37,7 @@ import {
   type ClassifierResult,
   type Status,
   type Ticket,
-} from "../types.js";
+} from "@curacel/shared";
 import { v4 as uuidv4 } from "uuid";
 
 import { downloadSlackFile, isPdf, isSupportedImage } from "./files.js";

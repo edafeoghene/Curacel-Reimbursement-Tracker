@@ -13,7 +13,7 @@ import type {
   AuditLogEntry,
   RouteRow,
   Ticket,
-} from "../../src/types.js";
+} from "@curacel/shared";
 
 // Expected field lists. These mirror the type declarations exactly. Adding a
 // field to a type without updating both the type-side list here AND the

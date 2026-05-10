@@ -12,7 +12,7 @@ import {
   __seedPendingNudgeForTests,
   type ItemOutcome,
 } from "../../src/slack/events.js";
-import type { ClassifierItem } from "../../src/types.js";
+import type { ClassifierItem } from "@curacel/shared";
 
 const CHANNEL = "C09FB2S5WJC";
 const REQUESTER = "U_REQ";

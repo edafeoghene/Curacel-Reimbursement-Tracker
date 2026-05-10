@@ -7,11 +7,17 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build:shared": "npm run build -w @curacel/shared",
+    "build": "npm run build:shared && tsc -p tsconfig.json",
+    "predev": "npm run build:shared",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "pretest": "npm run build:shared",
+    "typecheck": "npm run build:shared && tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
     "test": "vitest run",
@@ -19,6 +25,7 @@
     "bootstrap-sheet": "tsx src/sheets/bootstrap.ts"
   },
   "dependencies": {
+    "@curacel/shared": "*",
     "@slack/bolt": "^3.21.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

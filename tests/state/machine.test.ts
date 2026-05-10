@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { transition } from "../../src/state/machine.js";
-import type { Ticket, Status, StateEvent } from "../../src/types.js";
+import type { Ticket, Status, StateEvent } from "@curacel/shared";
 
 // Build a ticket fixture in any status with sensible defaults. Tests override
 // only the fields that matter for the case under test.

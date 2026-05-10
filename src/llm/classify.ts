@@ -12,7 +12,7 @@ import { z } from "zod";
 import type {
   ClassifierResult,
   ClassifyInput,
-} from "../types.js";
+} from "@curacel/shared";
 import { callLLM } from "./client.js";
 import { buildClassifierMessages, CLASSIFIER_CATEGORIES } from "./prompts.js";
 

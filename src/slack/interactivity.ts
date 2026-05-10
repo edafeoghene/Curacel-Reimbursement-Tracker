@@ -24,7 +24,7 @@ import {
   PAYMENT_STEP_SENTINEL,
   type Approval,
   type Ticket,
-} from "../types.js";
+} from "@curacel/shared";
 import { safeAudit } from "../sheets/audit.js";
 
 import { postFeedLine } from "./feed.js";

@@ -4,7 +4,7 @@
 
 import { dataRange, getSheetsClient } from "./client.js";
 import { ROUTES_HEADERS, TAB_ROUTES } from "./schema.js";
-import type { Route } from "../types.js";
+import type { Route } from "@curacel/shared";
 
 const NUM_COLS = ROUTES_HEADERS.length;
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;

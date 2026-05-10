@@ -2,8 +2,8 @@
 // The actual sheet read and any in-memory rebuild happens in the sheets/slack
 // layers; this file just decides which tickets need attention on boot.
 
-import type { Ticket, Status } from "../types.js";
-import { isTerminalStatus, TICKET_STATUSES } from "../types.js";
+import type { Ticket, Status } from "@curacel/shared";
+import { isTerminalStatus, TICKET_STATUSES } from "@curacel/shared";
 
 /**
  * Statuses that represent in-flight work. On boot, tickets in these states
