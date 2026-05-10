@@ -26,6 +26,9 @@ export default async function DashboardLayout({
               <Link href="/tickets" className="hover:text-zinc-900 dark:hover:text-zinc-50">
                 Tickets
               </Link>
+              <Link href="/workload" className="hover:text-zinc-900 dark:hover:text-zinc-50">
+                Workload
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3 text-sm">
