@@ -3,30 +3,23 @@
 // layers; this file just decides which tickets need attention on boot.
 
 import type { Ticket, Status } from "../types.js";
+import { isTerminalStatus, TICKET_STATUSES } from "../types.js";
 
 /**
  * Statuses that represent in-flight work. On boot, tickets in these states
  * must be re-attached to the runtime so we can re-DM, re-watch payments, etc.
  *
- * Derived by exclusion from the terminal set, but kept as an explicit literal
- * so `Status` exhaustiveness checks fire if the enum changes.
+ * Derived from the canonical TICKET_STATUSES + isTerminalStatus so the
+ * single source of truth is types.ts and a new status added there fires
+ * tsc-time exhaustiveness checks.
  */
-export const NON_TERMINAL_STATUSES = [
-  "SUBMITTED",
-  "AWAITING_APPROVAL",
-  "NEEDS_CLARIFICATION",
-  "APPROVED",
-  "AWAITING_PAYMENT",
-  "MANUAL_REVIEW",
-] as const satisfies readonly Status[];
-
-const NON_TERMINAL_SET: ReadonlySet<Status> = new Set<Status>(
-  NON_TERMINAL_STATUSES,
+export const NON_TERMINAL_STATUSES: readonly Status[] = TICKET_STATUSES.filter(
+  (s) => !isTerminalStatus(s),
 );
 
 /** True if the status is non-terminal and the ticket is still in flight. */
 export function isNonTerminal(status: Status): boolean {
-  return NON_TERMINAL_SET.has(status);
+  return !isTerminalStatus(status);
 }
 
 /**

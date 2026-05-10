@@ -17,9 +17,10 @@ import { getTicketByTrackingId, updateTicket } from "../sheets/tickets.js";
 import { transition } from "../state/machine.js";
 import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
 
-import { fetchUserName, safeAudit } from "./events.js";
+import { safeAudit } from "../sheets/audit.js";
 import { postFeedLine } from "./feed.js";
 import { dmUser, updateMessage } from "./messaging.js";
+import { fetchUserName } from "./users.js";
 import { approverDmBlocks, dmAfterCancel } from "./views.js";
 
 interface Deps {

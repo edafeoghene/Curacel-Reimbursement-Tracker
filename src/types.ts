@@ -1,6 +1,18 @@
 // Shared type contract. Every module in this codebase imports from here.
 // If a type doesn't fit a sheet column or a state transition, it doesn't go here.
 
+// ---------- Sentinels ----------
+
+/**
+ * Sentinel `step_number` for the financial-manager Mark-as-Paid approval row.
+ * Phase 1.0 needed somewhere to store the FM DM coords (channel + ts) so the
+ * file_share watcher could match the proof back to a ticket; we couldn't add
+ * fields to the Ticket type without a sheet schema change, so an approval
+ * row at step_number = 99 holds the coords. NEXT.md follow-up B tracks the
+ * proper fix (move to dedicated Ticket fields).
+ */
+export const PAYMENT_STEP_SENTINEL = 99;
+
 // ---------- States & decisions ----------
 
 export const TICKET_STATUSES = [
@@ -18,6 +30,17 @@ export type Status = (typeof TICKET_STATUSES)[number];
 
 export const TERMINAL_STATUSES = ["PAID", "REJECTED", "CANCELLED"] as const satisfies readonly Status[];
 export type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
+
+const TERMINAL_SET: ReadonlySet<Status> = new Set<Status>(TERMINAL_STATUSES);
+
+/**
+ * True iff the status represents a terminal state (PAID / REJECTED /
+ * CANCELLED). Single source of truth — every other module imports this
+ * helper instead of redefining its own set.
+ */
+export function isTerminalStatus(status: Status): boolean {
+  return TERMINAL_SET.has(status);
+}
 
 export const APPROVAL_DECISIONS = [
   "PENDING",
@@ -186,5 +209,10 @@ export const AUDIT_EVENTS = {
   AUTHORIZATION_REJECTED: "AUTHORIZATION_REJECTED",
   ROUTES_REFRESHED: "ROUTES_REFRESHED",
   RECEIPT_PARSED: "RECEIPT_PARSED",
+  // Umbrella reason-bearing entry for tickets that begin life in
+  // MANUAL_REVIEW (low confidence, no matching route, no approvers, etc.).
+  // Distinct from LLM_FAILED which is reserved for actual classifier
+  // failures so audit-log greps stay meaningful.
+  MANUAL_REVIEW_OPENED: "MANUAL_REVIEW_OPENED",
 } as const;
 export type AuditEventType = (typeof AUDIT_EVENTS)[keyof typeof AUDIT_EVENTS];

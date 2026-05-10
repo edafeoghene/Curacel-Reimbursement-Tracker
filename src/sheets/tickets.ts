@@ -13,7 +13,7 @@ import {
 import { enqueueWrite } from "./queue.js";
 import { TAB_TICKETS, TICKETS_HEADERS } from "./schema.js";
 import type { Status, Ticket } from "../types.js";
-import { TICKET_STATUSES } from "../types.js";
+import { isTerminalStatus, TICKET_STATUSES } from "../types.js";
 
 export class RowVersionConflict extends Error {
   constructor(
@@ -36,7 +36,6 @@ export class TicketNotFoundError extends Error {
 }
 
 const NUM_COLS = TICKETS_HEADERS.length;
-const TERMINAL: ReadonlySet<Status> = new Set(["PAID", "REJECTED", "CANCELLED"]);
 
 // ---------- (de)serialization ----------
 
@@ -208,7 +207,7 @@ export async function listNonTerminalTickets(): Promise<Ticket[]> {
     } catch {
       continue;
     }
-    if (!TERMINAL.has(parsed.status)) out.push(parsed);
+    if (!isTerminalStatus(parsed.status)) out.push(parsed);
   }
   return out;
 }

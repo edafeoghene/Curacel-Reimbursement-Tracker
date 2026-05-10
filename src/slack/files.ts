@@ -30,13 +30,33 @@ export class SlackFileDownloadFailed extends Error {
   }
 }
 
+// Slack's file CDN. We assert the URL hosts on this allow-list before
+// sending the bot token, so even if a malformed event payload comes in
+// with an attacker-controlled url_private, we never leak the token to a
+// foreign host. Defense-in-depth — Slack server-generates these URLs in
+// normal operation.
+const ALLOWED_FILE_URL_PREFIXES = [
+  "https://files.slack.com/",
+  "https://slack-files.com/",
+];
+
+function isAllowedSlackFileUrl(url: string): boolean {
+  return ALLOWED_FILE_URL_PREFIXES.some((p) => url.startsWith(p));
+}
+
 /**
- * Download a Slack-hosted file. The caller is responsible for picking only
- * URLs they consider safe and trusted (from a Slack event payload).
+ * Download a Slack-hosted file. The URL host is validated against the
+ * Slack file-CDN allow-list before the bot token is sent.
  */
 export async function downloadSlackFile(
   urlPrivate: string,
 ): Promise<{ buffer: Buffer; mime: string; size: number }> {
+  if (!isAllowedSlackFileUrl(urlPrivate)) {
+    throw new SlackFileDownloadFailed(
+      `Refusing to fetch non-Slack URL: ${urlPrivate}`,
+    );
+  }
+
   const token = process.env.SLACK_BOT_TOKEN;
   if (!token) {
     throw new SlackFileDownloadFailed(

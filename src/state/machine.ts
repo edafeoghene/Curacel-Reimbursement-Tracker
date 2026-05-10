@@ -10,6 +10,7 @@ import type {
   SideEffect,
   Status,
 } from "../types.js";
+import { isTerminalStatus } from "../types.js";
 
 /**
  * Apply a state event to a ticket and produce the next status + side effects.
@@ -124,7 +125,7 @@ export function transition(
     }
 
     case "CANCEL": {
-      if (isTerminal(status)) {
+      if (isTerminalStatus(status)) {
         return illegal(status, event.type);
       }
       return ok("CANCELLED", [
@@ -140,7 +141,7 @@ export function transition(
       // Caller is responsible for the underlying issue (failed DM, lost route,
       // etc.); this just keeps the state write honest with PLAN.md §4 #10 and
       // surfaces to the FM uniformly.
-      if (isTerminal(status)) {
+      if (isTerminalStatus(status)) {
         return illegal(status, event.type);
       }
       return ok("MANUAL_REVIEW", [
@@ -169,6 +170,3 @@ function illegal(current: Status, eventType: string): TransitionResult {
   };
 }
 
-function isTerminal(status: Status): boolean {
-  return status === "PAID" || status === "REJECTED" || status === "CANCELLED";
-}

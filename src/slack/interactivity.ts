@@ -19,16 +19,18 @@ import { appendApproval, listApprovalsForTicket, updateApprovalDecision } from "
 import { getCachedRoutes } from "../sheets/routes.js";
 import { getTicketByTrackingId, updateTicket } from "../sheets/tickets.js";
 import { transition } from "../state/machine.js";
-import { AUDIT_EVENTS, type Approval, type Ticket } from "../types.js";
+import {
+  AUDIT_EVENTS,
+  PAYMENT_STEP_SENTINEL,
+  type Approval,
+  type Ticket,
+} from "../types.js";
+import { safeAudit } from "../sheets/audit.js";
 
 import { postFeedLine } from "./feed.js";
 import { dmUser, postEphemeral, updateMessage } from "./messaging.js";
-import {
-  escalateToManualReview,
-  fetchUserName,
-  PAYMENT_STEP_SENTINEL,
-  safeAudit,
-} from "./events.js";
+import { escalateToManualReview } from "./events.js";
+import { fetchUserName } from "./users.js";
 import {
   approverDmAfterApprove,
   approverDmAfterClarify,

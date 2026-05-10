@@ -17,7 +17,7 @@ import {
   listApprovalsForTicket,
   updateApprovalDecision,
 } from "../sheets/approvals.js";
-import { appendAuditLog } from "../sheets/audit.js";
+import { safeAudit } from "../sheets/audit.js";
 import {
   appendTicket,
   getTicketBySourceMessageTs,
@@ -30,6 +30,7 @@ import { transition } from "../state/machine.js";
 import { getCachedRoutes } from "../sheets/routes.js";
 import {
   AUDIT_EVENTS,
+  PAYMENT_STEP_SENTINEL,
   type Approval,
   type ClassifierImage,
   type ClassifierItem,
@@ -43,15 +44,8 @@ import { downloadSlackFile, isPdf, isSupportedImage } from "./files.js";
 import { extractPdfPage1AsImage } from "../llm/pdf.js";
 import { postFeedLine } from "./feed.js";
 import { ackInThread, dmUser, postEphemeral } from "./messaging.js";
+import { fetchUserName } from "./users.js";
 import { approverDmBlocks, manualReviewDmBlocks } from "./views.js";
-
-// Sentinel step_number for the financial-manager "payment" approval row.
-// See Wave 2 final report — we cannot add fields to Ticket so the DM coords
-// for the Mark-as-Paid message ride on an approval row.
-export const PAYMENT_STEP_SENTINEL = 99;
-
-// Per-process cache for users.info lookups.
-const userNameCache = new Map<string, string>();
 
 const AMOUNT_REGEX =
   /(?:[₦$€£]\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:NGN|USD|EUR|GBP)\b)/i;
@@ -122,27 +116,6 @@ export function __resetPendingNudgesForTests(): void {
 /** Test-only: seed a pending nudge so the edit/thread paths can be exercised. */
 export function __seedPendingNudgeForTests(n: PendingNudge): void {
   pendingNudges.set(n.source_message_ts, n);
-}
-
-export async function fetchUserName(
-  client: WebClient,
-  userId: string,
-): Promise<string> {
-  const cached = userNameCache.get(userId);
-  if (cached) return cached;
-  try {
-    const res = await client.users.info({ user: userId });
-    const name =
-      res.user?.profile?.display_name ||
-      res.user?.profile?.real_name ||
-      res.user?.real_name ||
-      res.user?.name ||
-      userId;
-    userNameCache.set(userId, name);
-    return name;
-  } catch {
-    return userId;
-  }
 }
 
 interface SlackFilePartial {
@@ -562,7 +535,11 @@ export function makeMessageHandler(deps: HandlerDeps) {
       classifier = await classifyExpense({ text, images });
     } catch (err) {
       if (err instanceof LLMCallFailed || err instanceof ClassifierParseError) {
-        await routeToManualReview({
+        const reason =
+          err instanceof LLMCallFailed
+            ? `LLM call failed: ${err.message}`
+            : `Classifier output unparseable: ${err.message}`;
+        const id = await routeToManualReview({
           client,
           config,
           sourceTs,
@@ -570,11 +547,18 @@ export function makeMessageHandler(deps: HandlerDeps) {
           userId,
           text,
           primary,
-          reason:
-            err instanceof LLMCallFailed
-              ? `LLM call failed: ${err.message}`
-              : `Classifier output unparseable: ${err.message}`,
+          reason,
         });
+        // Emit LLM_FAILED specifically for genuine classifier failures so
+        // future grep on LLM-call health is meaningful.
+        if (id) {
+          await safeAudit({
+            tracking_id: id,
+            actor_user_id: "system",
+            event_type: AUDIT_EVENTS.LLM_FAILED,
+            details: { reason, kind: err.constructor.name },
+          });
+        }
         return;
       }
       throw err;
@@ -874,19 +858,22 @@ async function processOneItem(
     });
   }
 
-  // CLASSIFIED transition.
+  // CLASSIFIED transition. High-confidence stays in SUBMITTED, so we only
+  // emit a STATE_TRANSITION row when the status actually changes — the
+  // LLM_CLASSIFIED audit row above already records the classification
+  // outcome, so a same-status STATE_TRANSITION is dead weight.
   const classifiedResult = transition(ticket, {
     type: "CLASSIFIED",
     confidence: classifier.confidence,
   });
-  if (classifiedResult.ok) {
+  if (classifiedResult.ok && classifiedResult.next !== ticket.status) {
     await safeAudit({
       tracking_id: trackingId,
       actor_user_id: "system",
       event_type: AUDIT_EVENTS.STATE_TRANSITION,
       details: {
         event: "CLASSIFIED",
-        from: "SUBMITTED",
+        from: ticket.status,
         to: classifiedResult.next,
       },
     });
@@ -1283,7 +1270,9 @@ async function routeToManualReview(
     description: item?.description ?? "(unclassified — manual review)",
     category: item?.category ?? "other",
     amount: item?.amount ?? 0,
-    currency: item?.currency ?? "NGN",
+    // No currency default. PLAN.md §10 has none; the FM resolves it during
+    // manual review. An empty string makes the missing-data state visible.
+    currency: item?.currency ?? "",
     receipt_file_id: primary?.id ?? "",
     receipt_file_url: primary?.url_private ?? "",
     status: "MANUAL_REVIEW",
@@ -1309,10 +1298,14 @@ async function routeToManualReview(
     event_type: AUDIT_EVENTS.TICKET_CREATED,
     details: { reason, status: "MANUAL_REVIEW", confidence: args.confidence },
   });
+  // Generic umbrella event — distinct from LLM_FAILED, which is emitted by
+  // the caller iff the reason is genuinely an LLM failure (LLMCallFailed /
+  // ClassifierParseError). "No matching route", "no approvers", "tracking
+  // ID collision", etc. produce only MANUAL_REVIEW_OPENED.
   await safeAudit({
     tracking_id: trackingId,
     actor_user_id: "system",
-    event_type: AUDIT_EVENTS.LLM_FAILED,
+    event_type: AUDIT_EVENTS.MANUAL_REVIEW_OPENED,
     details: { reason },
   });
 
@@ -1333,29 +1326,3 @@ async function routeToManualReview(
   return trackingId;
 }
 
-interface AuditPayload {
-  tracking_id: string;
-  actor_user_id: string;
-  event_type: string;
-  details: unknown;
-}
-
-async function safeAudit(p: AuditPayload): Promise<void> {
-  try {
-    await appendAuditLog({
-      log_id: uuidv4(),
-      tracking_id: p.tracking_id,
-      timestamp: new Date().toISOString(),
-      actor_user_id: p.actor_user_id,
-      event_type: p.event_type,
-      details_json: JSON.stringify(p.details ?? {}),
-    });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[audit] append failed for ${p.event_type}:`, err);
-  }
-}
-
-// Re-export the audit helper so interactivity.ts doesn't have to repeat the
-// `appendAuditLog` boilerplate.
-export { safeAudit };
