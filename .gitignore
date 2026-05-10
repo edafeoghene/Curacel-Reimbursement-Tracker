@@ -17,6 +17,10 @@ edafeoghene-project-*.json
 *-credentials*.json
 *.gserviceaccount*.json
 
+# Google OAuth client secret JSON downloaded from Cloud Console — never commit
+client_secret_*.json
+*.apps.googleusercontent.com.json
+
 # IDE
 .vscode/
 .idea/

@@ -13,14 +13,24 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "frontend/**/*.test.ts"],
+    exclude: ["**/node_modules/**", "**/.next/**", "**/dist/**"],
     environment: "node",
     globals: false,
     reporters: ["default"],
     coverage: {
       reporter: ["text", "html"],
-      include: ["src/**/*.ts", "packages/shared/src/**/*.ts"],
-      exclude: ["src/index.ts", "src/**/*.d.ts", "packages/shared/src/**/*.d.ts"],
+      include: [
+        "src/**/*.ts",
+        "packages/shared/src/**/*.ts",
+        "frontend/lib/**/*.ts",
+      ],
+      exclude: [
+        "src/index.ts",
+        "src/**/*.d.ts",
+        "packages/shared/src/**/*.d.ts",
+        "frontend/**/*.test.ts",
+      ],
     },
   },
 });
