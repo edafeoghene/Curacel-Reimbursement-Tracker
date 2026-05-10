@@ -88,13 +88,14 @@ export default async function TicketsPage({
   const page = parsePage(raw);
 
   // Single Sheets read; we filter for display in JS AND derive the
-  // distinct-route list for the dropdown from the same dataset. Avoids
-  // a second sheet read for the route list.
+  // dropdown options (routes, requesters) from the same dataset.
+  // Avoids extra sheet reads for the dropdown lists.
   const everything = await listAllTickets();
   const all = applyTicketFilters(everything, filters);
   const distinctRoutes = Array.from(
     new Set(everything.map((t) => t.route_id).filter((r): r is string => Boolean(r))),
   ).sort();
+  const distinctRequesters = collectRequesters(everything);
 
   const totalPages = Math.max(1, Math.ceil(all.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -120,7 +121,7 @@ export default async function TicketsPage({
         </form>
       </div>
 
-      <FiltersForm filters={filters} routes={distinctRoutes} />
+      <FiltersForm filters={filters} routes={distinctRoutes} requesters={distinctRequesters} />
 
       {slice.length === 0 ? (
         <EmptyState hasFilters={hasAnyFilter(filters)} />
@@ -144,12 +145,43 @@ function hasAnyFilter(f: TicketListFilters): boolean {
   );
 }
 
+interface RequesterOption {
+  userId: string;
+  name: string;
+}
+
+/**
+ * Build a sorted (by display name) list of distinct requesters from the
+ * full ticket set. When a user_id appears across multiple tickets with
+ * different names (e.g. a Slack display-name change), we keep the name
+ * from the most recently created ticket — the most current label.
+ * Falls back to the user_id when no name is on record.
+ */
+function collectRequesters(tickets: readonly Ticket[]): RequesterOption[] {
+  const byId = new Map<string, { name: string; lastSeen: string }>();
+  for (const t of tickets) {
+    if (!t.requester_user_id) continue;
+    const existing = byId.get(t.requester_user_id);
+    if (!existing || t.created_at > existing.lastSeen) {
+      byId.set(t.requester_user_id, {
+        name: t.requester_name || t.requester_user_id,
+        lastSeen: t.created_at,
+      });
+    }
+  }
+  return Array.from(byId.entries())
+    .map(([userId, { name }]) => ({ userId, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function FiltersForm({
   filters,
   routes,
+  requesters,
 }: {
   filters: TicketListFilters;
   routes: string[];
+  requesters: RequesterOption[];
 }) {
   return (
     <form
@@ -171,14 +203,19 @@ function FiltersForm({
           ))}
         </select>
       </Field>
-      <Field label="Requester (user id)" className="min-w-[12rem] flex-1">
-        <input
-          type="text"
+      <Field label="Requester" className="min-w-[12rem] flex-1">
+        <select
           name="requester"
           defaultValue={filters.requesterUserId ?? ""}
-          placeholder="U0…"
           className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
-        />
+        >
+          <option value="">All requesters</option>
+          {requesters.map((r) => (
+            <option key={r.userId} value={r.userId}>
+              {r.name}
+            </option>
+          ))}
+        </select>
       </Field>
       <Field label="Route" className="min-w-[10rem] flex-1">
         <select
