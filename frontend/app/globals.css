@@ -22,5 +22,10 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* The previous Arial fallback hardcode silently shipped the whole UI in
+     Arial — even though next/font/google loads Geist into --font-sans via
+     the @theme inline block above. Use the theme variable with sensible
+     fallbacks so Geist actually renders, and so system-ui kicks in if the
+     CDN download fails. */
+  font-family: var(--font-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
 }
