@@ -1,9 +1,10 @@
 import Link from "next/link";
 
-import { type Status, type Ticket } from "@curacel/shared";
+import { type Ticket } from "@curacel/shared";
 
 import { StatusDonutChart } from "@/components/charts/status-donut-chart";
 import { WeeklyPaidChart } from "@/components/charts/weekly-paid-chart";
+import { StatusBadge } from "@/components/status-badge";
 import {
   aggregateByStatus,
   computeKpis,
@@ -335,7 +336,7 @@ function StuckAlert({ tickets }: { tickets: Ticket[] }) {
               <li key={t.tracking_id}>
                 <Link
                   href={`/tickets/${encodeURIComponent(t.tracking_id)}`}
-                  className="inline-flex items-center rounded border border-amber-200 bg-white px-2 py-0.5 font-mono text-xs text-amber-900 transition hover:bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/60 dark:text-amber-200 dark:hover:bg-amber-950"
+                  className="inline-flex items-center rounded-md border border-amber-200 bg-white px-2 py-0.5 font-mono text-xs text-amber-900 transition hover:bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/60 dark:text-amber-200 dark:hover:bg-amber-950"
                 >
                   {t.tracking_id}{" "}
                   <span className="ml-1.5 text-amber-700/80 dark:text-amber-400/70">
@@ -395,28 +396,6 @@ function RequesterBar({ req, maxAmount }: { req: RequesterTotal; maxAmount: numb
         <span className="text-zinc-500">· {req.count}</span>
       </span>
     </li>
-  );
-}
-
-const STATUS_BADGE_TONE: Record<Status, string> = {
-  SUBMITTED: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-  AWAITING_APPROVAL: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-  NEEDS_CLARIFICATION: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
-  APPROVED: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
-  AWAITING_PAYMENT: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300",
-  PAID: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  REJECTED: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
-  CANCELLED: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
-  MANUAL_REVIEW: "bg-pink-100 text-pink-800 dark:bg-pink-900/40 dark:text-pink-300",
-};
-
-function StatusBadge({ status }: { status: Status }) {
-  return (
-    <span
-      className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE_TONE[status]}`}
-    >
-      {status}
-    </span>
   );
 }
 

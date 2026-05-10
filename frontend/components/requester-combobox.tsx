@@ -94,7 +94,7 @@ export function RequesterCombobox({
                     setValue("");
                     setOpen(false);
                   }}
-                  className="cursor-pointer rounded-sm px-2 py-1.5 text-sm text-zinc-700 aria-selected:bg-zinc-100 aria-selected:text-zinc-900 dark:text-zinc-300 dark:aria-selected:bg-zinc-900 dark:aria-selected:text-zinc-50"
+                  className="cursor-pointer rounded-md px-2 py-1.5 text-sm text-zinc-700 aria-selected:bg-zinc-100 aria-selected:text-zinc-900 dark:text-zinc-300 dark:aria-selected:bg-zinc-900 dark:aria-selected:text-zinc-50"
                 >
                   All requesters
                 </Command.Item>
@@ -106,7 +106,7 @@ export function RequesterCombobox({
                       setValue(o.userId);
                       setOpen(false);
                     }}
-                    className="cursor-pointer rounded-sm px-2 py-1.5 text-sm text-zinc-900 aria-selected:bg-zinc-100 dark:text-zinc-50 dark:aria-selected:bg-zinc-900"
+                    className="cursor-pointer rounded-md px-2 py-1.5 text-sm text-zinc-900 aria-selected:bg-zinc-100 dark:text-zinc-50 dark:aria-selected:bg-zinc-900"
                   >
                     <div className="truncate">{o.name}</div>
                     <div className="truncate font-mono text-xs text-zinc-500">{o.userId}</div>

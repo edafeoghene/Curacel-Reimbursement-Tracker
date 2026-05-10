@@ -34,7 +34,7 @@ export function FilePreview({ src, alt, aspectRatio = "3 / 4" }: Props) {
     return (
       <div
         style={{ aspectRatio }}
-        className="mt-3 flex w-full flex-col items-center justify-center gap-2 rounded border border-dashed border-zinc-200 bg-zinc-50 p-4 text-center text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+        className="mt-3 flex w-full flex-col items-center justify-center gap-2 rounded-md border border-dashed border-zinc-200 bg-zinc-50 p-4 text-center text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
       >
         <p>Couldn&apos;t preview this file inline.</p>
         <a
@@ -56,7 +56,7 @@ export function FilePreview({ src, alt, aspectRatio = "3 / 4" }: Props) {
       alt={alt}
       style={{ aspectRatio }}
       onError={() => setErrored(true)}
-      className="mt-3 w-full rounded border border-zinc-100 bg-zinc-50 object-contain dark:border-zinc-800 dark:bg-zinc-900"
+      className="mt-3 w-full rounded-md border border-zinc-100 bg-zinc-50 object-contain dark:border-zinc-800 dark:bg-zinc-900"
     />
   );
 }

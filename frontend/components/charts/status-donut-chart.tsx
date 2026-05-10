@@ -2,28 +2,15 @@
 
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
-import type { Status } from "@curacel/shared";
-
 import {
   formatCurrencyFull,
   type StatusAggregate,
 } from "@/lib/dashboard/aggregates";
+import { STATUS_HEX } from "@/lib/status-palette";
 
 interface Props {
   data: StatusAggregate[];
 }
-
-const STATUS_FILLS: Record<Status, string> = {
-  SUBMITTED: "#a1a1aa",
-  AWAITING_APPROVAL: "#f59e0b",
-  NEEDS_CLARIFICATION: "#f97316",
-  APPROVED: "#3b82f6",
-  AWAITING_PAYMENT: "#8b5cf6",
-  PAID: "#10b981",
-  REJECTED: "#ef4444",
-  CANCELLED: "#71717a",
-  MANUAL_REVIEW: "#ec4899",
-};
 
 export function StatusDonutChart({ data }: Props) {
   const visible = data.filter((s) => s.count > 0);
@@ -37,8 +24,25 @@ export function StatusDonutChart({ data }: Props) {
     );
   }
 
+  // Build an alt-text summary of the chart for screen readers. Recharts
+  // doesn't expose its SVG as an accessible image by default; this gives
+  // AT a single text reading equivalent to glancing at the donut +
+  // legend.
+  const ariaLabel =
+    `Status distribution donut chart, ${total} ticket${total === 1 ? "" : "s"} total. ` +
+    visible
+      .slice()
+      .sort((a, b) => b.count - a.count)
+      .map((s) => `${s.status}: ${s.count}`)
+      .join(", ") +
+    ".";
+
   return (
-    <div className="grid items-center gap-6 sm:grid-cols-[220px_1fr]">
+    <div
+      className="grid items-center gap-6 sm:grid-cols-[220px_1fr]"
+      role="img"
+      aria-label={ariaLabel}
+    >
       <div className="relative h-56">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -52,7 +56,7 @@ export function StatusDonutChart({ data }: Props) {
               stroke="none"
             >
               {visible.map((entry) => (
-                <Cell key={entry.status} fill={STATUS_FILLS[entry.status]} />
+                <Cell key={entry.status} fill={STATUS_HEX[entry.status]} />
               ))}
             </Pie>
             <Tooltip content={<CustomTooltip total={total} />} />
@@ -71,7 +75,7 @@ export function StatusDonutChart({ data }: Props) {
             <li key={s.status} className="grid grid-cols-[10px_1fr_auto_auto] items-center gap-2">
               <span
                 className="inline-block h-2.5 w-2.5 rounded-sm"
-                style={{ backgroundColor: STATUS_FILLS[s.status] }}
+                style={{ backgroundColor: STATUS_HEX[s.status] }}
               />
               <span className="font-mono text-xs text-zinc-700 dark:text-zinc-300">
                 {s.status}

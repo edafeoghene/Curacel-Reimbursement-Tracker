@@ -21,8 +21,21 @@ interface Props {
 }
 
 export function WeeklyPaidChart({ data }: Props) {
+  const total = data.reduce((s, p) => s + p.amount, 0);
+  const ticketsTotal = data.reduce((s, p) => s + p.count, 0);
+  // Screen-reader equivalent of "glance at the bar chart": total spent
+  // across the window plus the per-week sequence. AT users get the same
+  // information sighted users get from the bars.
+  const ariaLabel =
+    `Bar chart of NGN paid per week across ${data.length} weeks. ` +
+    `Total: ${formatCurrencyFull(total)} across ${ticketsTotal} ${
+      ticketsTotal === 1 ? "ticket" : "tickets"
+    }. ` +
+    data.map((p) => `${p.weekLabel}: ${formatCurrencyFull(p.amount)}`).join("; ") +
+    ".";
+
   return (
-    <div className="h-64 w-full">
+    <div className="h-64 w-full" role="img" aria-label={ariaLabel}>
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
           <CartesianGrid

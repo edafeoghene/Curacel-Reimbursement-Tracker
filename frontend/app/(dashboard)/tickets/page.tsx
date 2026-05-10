@@ -8,6 +8,7 @@ import {
   RequesterCombobox,
   type RequesterOption,
 } from "@/components/requester-combobox";
+import { StatusBadge } from "@/components/status-badge";
 import {
   applyTicketFilters,
   listAllTickets,
@@ -322,27 +323,6 @@ function TicketsTable({ rows }: { rows: Ticket[] }) {
     </div>
   );
 }
-
-function StatusBadge({ status }: { status: Status }) {
-  const tone = STATUS_TONES[status];
-  return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>
-      {status}
-    </span>
-  );
-}
-
-const STATUS_TONES: Record<Status, string> = {
-  SUBMITTED: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-  AWAITING_APPROVAL: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
-  NEEDS_CLARIFICATION: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
-  APPROVED: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
-  AWAITING_PAYMENT: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300",
-  PAID: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  REJECTED: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
-  CANCELLED: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
-  MANUAL_REVIEW: "bg-pink-100 text-pink-800 dark:bg-pink-900/40 dark:text-pink-300",
-};
 
 function formatDate(iso: string): string {
   if (!iso) return "—";
