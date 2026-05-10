@@ -3,13 +3,11 @@ import { notFound } from "next/navigation";
 
 import {
   type Approval,
-  type AuditLogEntry,
   type Status,
   type Ticket,
 } from "@curacel/shared";
 
 import { listApprovalsForTicket } from "@/lib/sheets/approvals";
-import { listAuditEntriesForTicket } from "@/lib/sheets/audit";
 import { getTicketByTrackingId } from "@/lib/sheets/tickets";
 
 export const revalidate = 30;
@@ -30,10 +28,9 @@ export default async function TicketDetailPage({
 }) {
   const { trackingId } = await params;
 
-  const [ticket, approvals, auditEntries] = await Promise.all([
+  const [ticket, approvals] = await Promise.all([
     getTicketByTrackingId(trackingId),
     listApprovalsForTicket(trackingId),
-    listAuditEntriesForTicket(trackingId),
   ]);
 
   if (!ticket) notFound();
@@ -58,7 +55,6 @@ export default async function TicketDetailPage({
           <HeaderCard ticket={ticket} />
           <DescriptionCard ticket={ticket} />
           {approvals.length > 0 ? <ApprovalTimeline approvals={approvals} /> : null}
-          {auditEntries.length > 0 ? <AuditLog entries={auditEntries} /> : null}
         </div>
         <div className="space-y-6">
           {ticket.receipt_file_id ? (
@@ -156,48 +152,6 @@ function ApprovalTimeline({ approvals }: { approvals: Approval[] }) {
       </ol>
     </div>
   );
-}
-
-function AuditLog({ entries }: { entries: AuditLogEntry[] }) {
-  return (
-    <div className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Audit log</h2>
-      <ol className="mt-4 space-y-3 text-sm">
-        {entries.map((e) => (
-          <li key={e.log_id} className="grid grid-cols-[140px_1fr] gap-3">
-            <span className="font-mono text-xs text-zinc-500">{formatDateTime(e.timestamp)}</span>
-            <div>
-              <span className="font-medium">{e.event_type}</span>
-              {e.actor_user_id ? (
-                <span className="ml-1 font-mono text-xs text-zinc-500">by {e.actor_user_id}</span>
-              ) : null}
-              {renderDetails(e.details_json)}
-            </div>
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function renderDetails(detailsJson: string): React.ReactNode {
-  if (!detailsJson) return null;
-  try {
-    const parsed = JSON.parse(detailsJson);
-    if (parsed && typeof parsed === "object" && Object.keys(parsed).length > 0) {
-      return (
-        <pre className="mt-1 overflow-x-auto rounded bg-zinc-50 px-2 py-1 text-xs text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-          {JSON.stringify(parsed, null, 2)}
-        </pre>
-      );
-    }
-    return null;
-  } catch {
-    // Malformed JSON — show raw so we don't hide data, but in a quiet style.
-    return (
-      <p className="mt-1 break-all text-xs text-zinc-500">{detailsJson}</p>
-    );
-  }
 }
 
 function FileCard({ title, fileId }: { title: string; fileId: string }) {

@@ -19,10 +19,13 @@ export default async function DashboardLayout({
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-6">
-            <Link href="/tickets" className="font-semibold tracking-tight">
+            <Link href="/" className="font-semibold tracking-tight">
               Curacel Expense Dashboard
             </Link>
             <nav className="flex items-center gap-4 text-sm text-zinc-600 dark:text-zinc-400">
+              <Link href="/" className="hover:text-zinc-900 dark:hover:text-zinc-50">
+                Home
+              </Link>
               <Link href="/tickets" className="hover:text-zinc-900 dark:hover:text-zinc-50">
                 Tickets
               </Link>
