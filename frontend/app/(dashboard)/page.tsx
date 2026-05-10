@@ -200,26 +200,48 @@ export default async function DashboardHome({
             No tickets yet. Submit one in the #expenses Slack channel.
           </p>
         ) : (
-          <ul className="mt-4 divide-y divide-zinc-100 text-sm dark:divide-zinc-800">
-            {recent.map((t) => (
-              <li key={t.tracking_id} className="flex items-center gap-3 py-2.5 sm:gap-4">
-                <Link
-                  href={`/tickets/${encodeURIComponent(t.tracking_id)}`}
-                  className="w-28 shrink-0 truncate font-mono text-xs text-zinc-900 hover:underline sm:w-36 dark:text-zinc-50"
-                >
-                  {t.tracking_id}
-                </Link>
-                <span className="hidden w-32 truncate text-zinc-600 md:inline dark:text-zinc-400">
-                  {t.requester_name}
-                </span>
-                <span className="flex-1 truncate text-sm">{t.description || "—"}</span>
-                <span className="shrink-0 font-mono text-xs text-zinc-700 sm:text-sm dark:text-zinc-300">
-                  {t.currency} {t.amount.toLocaleString()}
-                </span>
-                <StatusBadge status={t.status} />
-              </li>
-            ))}
-          </ul>
+          // Real <table> matches the queue page's semantics so AT reads
+          // this as tabular data (row/cell relationships, header
+          // associations) and column widths align across rows. Previously
+          // a flex+fixed-width <ul> drifted when names/descriptions
+          // varied in length.
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs uppercase tracking-wide text-zinc-500">
+                <tr>
+                  <th scope="col" className="py-2 pr-3 font-medium">Tracking ID</th>
+                  <th scope="col" className="hidden py-2 pr-3 font-medium md:table-cell">Requester</th>
+                  <th scope="col" className="py-2 pr-3 font-medium">Description</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Amount</th>
+                  <th scope="col" className="py-2 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {recent.map((t) => (
+                  <tr key={t.tracking_id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                    <td className="py-2.5 pr-3 font-mono text-xs">
+                      <Link
+                        href={`/tickets/${encodeURIComponent(t.tracking_id)}`}
+                        className="text-zinc-900 hover:underline dark:text-zinc-50"
+                      >
+                        {t.tracking_id}
+                      </Link>
+                    </td>
+                    <td className="hidden max-w-[10rem] truncate py-2.5 pr-3 text-zinc-600 md:table-cell dark:text-zinc-400">
+                      {t.requester_name}
+                    </td>
+                    <td className="max-w-0 truncate py-2.5 pr-3">{t.description || "—"}</td>
+                    <td className="py-2.5 pr-3 text-right font-mono text-xs text-zinc-700 sm:text-sm dark:text-zinc-300">
+                      {t.currency} {t.amount.toLocaleString()}
+                    </td>
+                    <td className="py-2.5">
+                      <StatusBadge status={t.status} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>
