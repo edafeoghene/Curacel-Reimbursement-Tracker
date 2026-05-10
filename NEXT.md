@@ -4,22 +4,13 @@
 
 ---
 
-## Where we are (2026-05-09)
+## Where we are (2026-05-10)
 
-**Six commits on the branch.** Phase 1.0 spine + 1.0 hardening + 1.1 reject + smart pre-classify gate + nudge completion + PDF page-1 extraction are all shipped and **validated end-to-end in a real Slack workspace**.
+All Phase 1.x feature work is shipped and **validated end-to-end in a real Slack workspace** (latest run: `EXP-2605-C5ME` reached PAID through clarify + resume + 2-step approval + Mark as Paid + file-proof). External code audit produced 19 findings; in-scope items have been fixed, deferred items captured below.
 
-```
-165150f phase 1.x: PDF page-1 extraction for the classifier vision input
-506c773 phase 1.1: reject branch + smart pre-classify gate + nudge completion
-943116b phase 1.0 hardening: real-workspace fixes
-92797ca phase 1.0 wave 2: slack handlers, config, health, boot wiring
-8da295d phase 1.0 wave 1: state machine, sheets layer, llm layer
-9e5259f scaffold curacel expense bot project (phase 1.0 spine)
-```
-
-- **168 tests** passing across 14 files (`npx vitest run`).
-- **`tsc --noEmit`** clean. **`npm run build`** clean.
-- Bot has been running locally via `npm run dev` (tsx watch). Real tickets created and processed through PAID / REJECTED states.
+- **221+ tests** passing across 17 files (`npm test` / `npx vitest run`).
+- **`npm run typecheck`** (now includes tests via `tsconfig.test.json`) clean. **`npm run build`** clean.
+- Bot runs locally via `npm run dev` (tsx watch). The only unchecked acceptance-box on the original PLAN is **Railway deploy**.
 
 ### What's working in production-shape behaviour
 
@@ -29,28 +20,34 @@
 | Source-channel-only filter, bot/edit/thread filters | ✅ |
 | Smart pre-classify gate (regex keyword filter) | ✅ |
 | Nudge completion via edit OR thread reply | ✅ |
-| OpenRouter classifier with Anthropic provider lock | ✅ |
+| OpenRouter classifier with Anthropic provider lock (test-asserted) | ✅ |
 | Markdown code-fence strip on classifier output | ✅ |
 | PNG/JPG receipt classification | ✅ |
-| **PDF page-1 extraction → PNG → vision input** | ✅ |
-| Single-step approval (`route.approvers[0]` only) | ✅ |
-| Reject button + reason modal | ✅ |
+| PDF page-1 extraction → PNG → vision input | ✅ |
+| **Multi-step routing — chain traversal across `route.approvers[1..N]`** | ✅ |
+| **Approver tags on FM Mark-as-Paid DM** | ✅ |
+| Approve / **Clarify** / **Delegate** / Reject buttons + modals | ✅ |
+| **Multi-expense splitting (N tickets per message)** | ✅ |
 | Mark as Paid + payment-proof watcher | ✅ |
-| Audit log for every state transition | ✅ |
-| Optimistic concurrency + serial write queue | ✅ |
+| **`/expense-resume EXP-…`** (FM-only clarification resume) | ✅ |
+| **`/expense-cancel EXP-…`** (requester or FM) | ✅ |
+| **Optional `#expense-log` feed (one-liner per state transition)** | ✅ |
+| Audit log for every transition (canonical `StateEvent` names only) | ✅ |
+| Optimistic concurrency + serial write queue + **retry-with-backoff** | ✅ |
+| Slack file-CDN host allow-list before sending bot token | ✅ |
 | `/health` endpoint, graceful shutdown | ✅ |
 
 ### What's still NOT built
 
-| Phase | Scope |
+| Item | Scope |
 |---|---|
-| 1.5 | Multi-step routing — chain traversal across `route.approvers[1..N]` |
-| 1.2 | Clarification button + reason modal + `/expense-resume` slash command |
-| 1.3 | Delegate button + user picker |
-| 1.4 | Multi-expense splitting (N tickets per message) |
-| 1.6 | `/expense-cancel` slash command |
-| 1.7 | `#expense-log` read-only feed channel |
-| — | Railway deploy (last unchecked Phase 1.0 acceptance box) |
+| — | **Railway deploy** (last unchecked Phase 1.0 acceptance box) |
+| audit follow-up A | File-share watcher does N full sheet scans (defer; Phase 2 perf) |
+| audit follow-up B | `PAYMENT_STEP_SENTINEL = 99` magic value → ticket fields (sheet schema migration) |
+| audit follow-up C | Test coverage gap on `tickets.ts` retry / `interactivity.ts` modal handlers / `sheets/*` |
+| audit follow-up D | `args: any` casts on Bolt action/view handlers (low-leverage type tightening) |
+| audit follow-up E | Split events.ts (1.1 KB) + interactivity.ts (1.6 KB) into per-handler modules |
+| audit follow-up F | O(n) full-table sheet reads on every interaction (Phase 2 indexing) |
 
 ---
 
@@ -204,7 +201,35 @@ The provider-lock test (audit's most security-critical item) is in place at [tes
 
 Modal-submit handler tests for interactivity.ts require a Bolt-shaped harness — high plumbing cost (~1 day for the suite). Defer until a regression actually bites.
 
+### D. `args: any` on Bolt action / view registrations
+
+Every `app.action(id, ...)` and `app.view(id, ...)` callback is typed `args: any` with an `// eslint-disable-next-line` comment. The auth checks inside the handlers are explicit identifier comparisons, so `any` doesn't actively defeat them — but field-name typos (e.g. `body.user.uid` instead of `body.user.id`) wouldn't be caught at compile time.
+
+**Fix shape** (~2 hours): Bolt exports `SlackActionMiddlewareArgs<BlockAction<ButtonAction>>` and `SlackViewMiddlewareArgs<ViewSubmitAction>`. Replace each `args: any` cast with the correct middleware-args type. Drop the eslint disables. No behavioral change.
+
+Low-leverage relative to the cost — the auth checks are the load-bearing safety, and they're explicit. Defer.
+
+### E. File size — events.ts at ~1.1 KB lines, interactivity.ts at ~1.6 KB
+
+PLAN.md §15 had each as one of nine modules. They've grown to swallow per-handler bodies, helpers, sentinels, and recovery paths. Most of the original-plan splits still make sense but require care.
+
+**Fix shape** (~3-4 hours, two passes):
+- `interactivity.ts` → split per button: `interactivity/approve.ts`, `reject.ts`, `clarify.ts`, `delegate.ts`, `mark_paid.ts`, plus a thin `index.ts` that registers them. Each file owns its button handler + modal-submit handler.
+- `events.ts` → keep the message dispatcher; relocate `processOneItem` to `events/process_item.ts`, `processPaymentProofFromFile` to `events/payment_proof.ts`, and the nudge-completion logic to `events/nudges.ts`.
+
+No urgency — the bot works. Worth doing the next time someone is reading the files for a full session.
+
+### F. O(n) full-table sheet reads on every interaction
+
+`getTicketByTrackingId`, `getTicketBySourceMessageTs`, `listNonTerminalTickets` each read the entire tickets sheet. Every button click is at least one full read; every `updateTicket` is two (read for `row_version`, write back). Fine at a few hundred tickets; multi-second latency at 5,000+; unusable at 50,000.
+
+**Fix shape** (~half day):
+- In-memory index `Map<tracking_id, sheet_row_index>` rebuilt at boot (the existing reconciliation read) and updated on every `appendTicket` / write.
+- Replace full-table reads with index lookup → `values.get` for the specific row range.
+
+This is a Phase 2 problem — the current operating point is small enough that the slowdown is invisible — but the design choice is worth flagging now so the next person knows it's not "always been like this".
+
 ### Decisions skipped (and why)
 
-- **Audit said `routeToManualReview` violates the rule** by writing `status: "MANUAL_REVIEW"` on creation. Not fixed — interpreted the rule pragmatically: "no code path may CHANGE status without going through `transition()`". Creation has no prior state; there's nothing to transition from. The audit log there already uses `TICKET_CREATED` + `LLM_FAILED`, no fake `STATE_TRANSITION` entry. Keeping the rule as "transitions only".
+- **Audit said `routeToManualReview` violates the state-machine rule** by writing `status: "MANUAL_REVIEW"` on creation. Not fixed — interpreted the rule pragmatically: "no code path may CHANGE status without going through `transition()`". Creation has no prior state; there's nothing to transition from. The audit log there now uses `TICKET_CREATED` + `MANUAL_REVIEW_OPENED` (no fake `STATE_TRANSITION` entry). Keeping the rule as "transitions only".
 - **Audit suggested cancel should update every non-terminal approval row's DM** — current fix only widens the filter to include `CLARIFICATION_REQUESTED` (and keeps `PENDING`). `DELEGATED` rows already had their DMs replaced with "Delegated to <@new>"; re-editing them is redundant. `APPROVED` / `REJECTED` rows are already terminal for the row's own DM lifecycle.
