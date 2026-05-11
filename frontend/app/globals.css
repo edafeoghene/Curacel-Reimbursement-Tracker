@@ -8,19 +8,38 @@
    prefers-color-scheme. */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ---------- Design tokens ----------
+   `surface` is the elevated card background — distinct from the page
+   `background` so cards visually float. `surface-2` is a slightly more
+   raised step for cards that should read as interactive (KPI tiles
+   etc.). `edge` is the hairline divider that doesn't compete with
+   content.
+
+   Tailwind 4 maps `--color-X` to `bg-X / text-X / border-X` utilities
+   automatically via @theme inline, so we can write
+   `bg-surface border-edge` directly in className. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fafafa;
+  --foreground: #09090b;
+  --surface: #ffffff;
+  --surface-2: #ffffff;
+  --edge: #e4e4e7;
 }
 
 .dark {
-  --background: #0a0a0a;
-  --foreground: #ededed;
+  --background: #050507;
+  --foreground: #fafafa;
+  --surface: #0e0e10;
+  --surface-2: #18181c;
+  --edge: #232328;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-edge: var(--edge);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -34,4 +53,34 @@ body {
      fallbacks so Geist actually renders, and so system-ui kicks in if the
      CDN download fails. */
   font-family: var(--font-sans), system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* ---------- Motion ----------
+   Half-second mount animation for dashboard sections. Cards fade in
+   while sliding up by 8px — gives the page a "loaded with intent" feel
+   without distracting. cubic-bezier(0.16, 1, 0.3, 1) is the easeOutExpo
+   shape: fast start, gentle settle. Stagger with inline animationDelay. */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer utilities {
+  .animate-in-up {
+    animation: fade-in-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+/* Respect prefers-reduced-motion: users who've asked for less motion
+   get static cards instead of the mount animation. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-in-up {
+    animation: none !important;
+  }
 }

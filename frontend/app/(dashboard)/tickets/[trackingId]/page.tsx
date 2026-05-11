@@ -63,7 +63,7 @@ export default async function TicketDetailPage({
 
 function HeaderCard({ ticket }: { ticket: Ticket }) {
   return (
-    <div className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="rounded-2xl border border-edge bg-surface p-6">
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3">
         <Row label="Amount">
           <span className="font-mono">
@@ -95,8 +95,8 @@ function HeaderCard({ ticket }: { ticket: Ticket }) {
 function DescriptionCard({ ticket }: { ticket: Ticket }) {
   if (!ticket.description) return null;
   return (
-    <div className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Description</h2>
+    <div className="rounded-2xl border border-edge bg-surface p-6">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Description</h2>
       <p className="mt-2 whitespace-pre-wrap text-sm">{ticket.description}</p>
     </div>
   );
@@ -104,8 +104,8 @@ function DescriptionCard({ ticket }: { ticket: Ticket }) {
 
 function ApprovalTimeline({ approvals }: { approvals: Approval[] }) {
   return (
-    <div className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Approval timeline</h2>
+    <div className="rounded-2xl border border-edge bg-surface p-6">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Approval timeline</h2>
       <ol className="mt-4 space-y-4">
         {approvals.map((a) => (
           <li key={a.approval_id} className="flex gap-4">
@@ -181,7 +181,7 @@ function FileCard({
 }) {
   const src = `/api/files/${encodeURIComponent(fileId)}`;
   return (
-    <div className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="rounded-2xl border border-edge bg-surface p-6">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold tracking-tight">{title}</h2>

@@ -73,7 +73,7 @@ export default async function WorkloadPage() {
 
 function ApproverCard({ row }: { row: ApproverRow }) {
   return (
-    <div className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="rounded-2xl border border-edge bg-surface p-6">
       <div className="flex items-baseline justify-between gap-3">
         <div>
           <p className="font-medium">{row.approverName || row.approverUserId}</p>

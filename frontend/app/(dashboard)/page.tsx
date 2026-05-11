@@ -71,8 +71,8 @@ export default async function DashboardHome({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Overview</h1>
+      <div className="animate-in-up">
+        <h1 className="text-3xl font-bold tracking-tight">Overview</h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           {tickets.length === 0
             ? "No tickets in the workbook yet."
@@ -90,7 +90,10 @@ export default async function DashboardHome({
 
       {stuck.length > 0 ? <StuckAlert tickets={stuck} /> : null}
 
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <section
+        className="grid animate-in-up grid-cols-2 gap-3 sm:grid-cols-4"
+        style={{ animationDelay: "60ms" }}
+      >
         <KpiCard
           label="Awaiting approval"
           bucket={kpis.awaitingApproval}
@@ -118,10 +121,13 @@ export default async function DashboardHome({
         />
       </section>
 
-      <section className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+      <section
+        className="animate-in-up rounded-2xl border border-edge bg-surface p-6"
+        style={{ animationDelay: "120ms" }}
+      >
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <div>
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Paid per week</h2>
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Paid per week</h2>
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               {formatCurrencyFull(weeklyTotal)} across {weeklyTicketsTotal}{" "}
               {weeklyTicketsTotal === 1 ? "ticket" : "tickets"}
@@ -144,17 +150,20 @@ export default async function DashboardHome({
         </div>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <section className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Status mix</h2>
+      <div
+        className="grid animate-in-up gap-6 lg:grid-cols-2"
+        style={{ animationDelay: "180ms" }}
+      >
+        <section className="rounded-2xl border border-edge bg-surface p-6">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Status mix</h2>
           <div className="mt-4">
             <StatusDonutChart data={statusAgg} />
           </div>
         </section>
 
-        <section className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+        <section className="rounded-2xl border border-edge bg-surface p-6">
           <div className="flex items-baseline justify-between gap-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Top categories (paid this month)</h2>
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Top categories (paid this month)</h2>
             <span className="text-xs text-zinc-500">{formatCurrencyFull(topCatsAmount)}</span>
           </div>
           {topCats.length === 0 ? (
@@ -169,9 +178,12 @@ export default async function DashboardHome({
         </section>
       </div>
 
-      <section className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+      <section
+        className="animate-in-up rounded-2xl border border-edge bg-surface p-6"
+        style={{ animationDelay: "240ms" }}
+      >
         <div className="flex items-baseline justify-between gap-3">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Top requesters (paid this month)</h2>
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Top requesters (paid this month)</h2>
           <span className="text-xs text-zinc-500">{formatCurrencyFull(topReqsAmount)}</span>
         </div>
         {topReqs.length === 0 ? (
@@ -185,9 +197,12 @@ export default async function DashboardHome({
         )}
       </section>
 
-      <section className="rounded-md border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+      <section
+        className="animate-in-up rounded-2xl border border-edge bg-surface p-6"
+        style={{ animationDelay: "300ms" }}
+      >
         <div className="flex items-baseline justify-between">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Recent tickets</h2>
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">Recent tickets</h2>
           <Link
             href="/tickets"
             className="text-xs text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-400"
@@ -252,11 +267,15 @@ export default async function DashboardHome({
 
 type Tone = "amber" | "violet" | "pink" | "emerald";
 
-const KPI_TONES: Record<Tone, string> = {
-  amber: "border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/40",
-  violet: "border-violet-200 bg-violet-50 dark:border-violet-900/60 dark:bg-violet-950/40",
-  pink: "border-pink-200 bg-pink-50 dark:border-pink-900/60 dark:bg-pink-950/40",
-  emerald: "border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/40",
+// Uniform elevated-surface cards instead of full tinted backgrounds —
+// the tone shows up as a single colored dot near the label + an arrow
+// in the delta line. Less visually busy when four sit side-by-side,
+// and the BIG money number gets to be the center of attention.
+const TONE_DOTS: Record<Tone, string> = {
+  amber: "bg-amber-500 shadow-[0_0_12px_rgba(245,158,11,0.4)]",
+  violet: "bg-violet-500 shadow-[0_0_12px_rgba(139,92,246,0.4)]",
+  pink: "bg-pink-500 shadow-[0_0_12px_rgba(236,72,153,0.4)]",
+  emerald: "bg-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.4)]",
 };
 
 function KpiCard({
@@ -275,15 +294,18 @@ function KpiCard({
   return (
     <Link
       href={href}
-      className={`group block rounded-md border p-4 transition hover:shadow-sm ${KPI_TONES[tone]}`}
+      className="group block rounded-2xl border border-edge bg-surface-2 p-5 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-lg dark:hover:border-zinc-700 dark:hover:shadow-black/40"
     >
-      <p className="text-xs font-medium uppercase tracking-wide text-zinc-600 dark:text-zinc-400">
-        {label}
-      </p>
-      <p className="mt-2 font-mono text-xl font-semibold tabular-nums tracking-tight">
+      <div className="flex items-center gap-2">
+        <span className={`h-2 w-2 rounded-full ${TONE_DOTS[tone]}`} aria-hidden />
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+          {label}
+        </p>
+      </div>
+      <p className="mt-4 font-mono text-3xl font-bold tabular-nums tracking-tight">
         {formatCurrencyCompact(bucket.amount)}
       </p>
-      <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+      <p className="mt-1 text-xs text-zinc-500">
         {bucket.count} {bucket.count === 1 ? "ticket" : "tickets"}
       </p>
       {delta ? <DeltaLine delta={delta} /> : null}
@@ -340,9 +362,15 @@ function StuckAlert({ tickets }: { tickets: Ticket[] }) {
   const display = tickets.slice(0, 6);
   const more = tickets.length - display.length;
   return (
-    <section className="rounded-md border border-amber-300 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/40">
+    <section
+      className="animate-in-up rounded-2xl border border-amber-300/80 bg-amber-50/80 p-5 backdrop-blur-sm dark:border-amber-900/60 dark:bg-amber-950/30"
+      style={{ animationDelay: "30ms" }}
+    >
       <div className="flex items-start gap-3">
-        <span aria-hidden className="mt-0.5 text-amber-700 dark:text-amber-400">
+        <span
+          aria-hidden
+          className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-400"
+        >
           ⚠
         </span>
         <div className="flex-1">

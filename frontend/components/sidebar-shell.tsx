@@ -36,7 +36,7 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, initialThe
     <div className="min-h-svh">
       {/* Mobile top bar (always shown <md). Sidebar collapse is a desktop
           concern; mobile keeps the top bar visible at all times. */}
-      <header className="border-b border-zinc-200 bg-white md:hidden dark:border-zinc-800 dark:bg-zinc-950">
+      <header className="border-b border-edge bg-surface md:hidden">
         <div className="flex items-center justify-between gap-4 px-4 py-3">
           <Link href="/" className="flex items-center gap-2">
             <Image
@@ -60,7 +60,7 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, initialThe
           closed via translate-x; stays in the DOM so the transition is
           smooth both ways. */}
       <aside
-        className={`hidden md:fixed md:inset-y-0 md:left-0 md:z-30 md:flex md:w-64 md:flex-col md:border-r md:border-zinc-200 md:bg-white md:px-4 md:py-6 md:transition-transform md:duration-200 dark:md:border-zinc-800 dark:md:bg-zinc-950 ${
+        className={`hidden md:fixed md:inset-y-0 md:left-0 md:z-30 md:flex md:w-64 md:flex-col md:border-r md:border-edge md:bg-surface md:px-4 md:py-6 md:transition-transform md:duration-200 ${
           open ? "md:translate-x-0" : "md:-translate-x-full"
         }`}
         // `inert` (React 19 prop, GA in all modern browsers) removes the
@@ -101,7 +101,7 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, initialThe
           <NavLink href="/workload">Workload</NavLink>
         </nav>
 
-        <div className="mt-auto space-y-3 border-t border-zinc-200 pt-4 dark:border-zinc-800">
+        <div className="mt-auto space-y-3 border-t border-edge pt-4">
           <div className="px-3">
             <ThemeToggle initialTheme={initialTheme} />
           </div>
@@ -114,7 +114,7 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, initialThe
           <form action={signOutAction} className="px-3">
             <button
               type="submit"
-              className="inline-flex h-8 w-full items-center justify-center rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-900 transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900"
+              className="inline-flex h-8 w-full items-center justify-center rounded-md border border-edge bg-surface-2 px-3 text-sm font-medium text-zinc-900 transition hover:bg-zinc-100/60 dark:text-zinc-50 dark:hover:bg-zinc-800/60"
             >
               Sign out
             </button>
@@ -128,7 +128,7 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, initialThe
         type="button"
         onClick={toggle}
         aria-label="Open sidebar"
-        className={`fixed left-4 top-4 z-20 hidden md:inline-flex md:h-9 md:w-9 md:items-center md:justify-center md:rounded-md md:border md:border-zinc-200 md:bg-white md:text-zinc-700 md:shadow-sm md:transition-opacity dark:md:border-zinc-800 dark:md:bg-zinc-950 dark:md:text-zinc-300 ${
+        className={`fixed left-4 top-4 z-20 hidden md:inline-flex md:h-9 md:w-9 md:items-center md:justify-center md:rounded-full md:border md:border-edge md:bg-surface md:text-zinc-700 md:shadow-sm md:transition-opacity dark:md:text-zinc-300 ${
           open ? "md:pointer-events-none md:opacity-0" : "md:opacity-100"
         }`}
         tabIndex={open ? -1 : 0}
@@ -146,7 +146,7 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, initialThe
 
       {/* Mobile-only secondary footer for sign-out + email — the mobile
           top bar is too cramped to fit them inline. */}
-      <footer className="border-t border-zinc-200 bg-white px-4 py-3 md:hidden dark:border-zinc-800 dark:bg-zinc-950">
+      <footer className="border-t border-edge bg-surface px-4 py-3 md:hidden">
         <div className="flex items-center justify-between gap-3 text-xs">
           <span
             className="truncate text-zinc-600 dark:text-zinc-400"
@@ -157,7 +157,7 @@ export function SidebarShell({ userEmail, signOutAction, initialOpen, initialThe
           <form action={signOutAction}>
             <button
               type="submit"
-              className="inline-flex h-7 items-center justify-center rounded-md border border-zinc-200 bg-white px-2.5 font-medium text-zinc-900 transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900"
+              className="inline-flex h-7 items-center justify-center rounded-md border border-edge bg-surface-2 px-2.5 font-medium text-zinc-900 transition hover:bg-zinc-100/60 dark:text-zinc-50 dark:hover:bg-zinc-800/60"
             >
               Sign out
             </button>
