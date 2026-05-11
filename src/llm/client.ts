@@ -1,10 +1,14 @@
 // OpenRouter client wrapper.
 //
 // This file is the ONE place in the codebase that constructs an LLM request.
-// Provider locking (anthropic only, no fallbacks), retries, and the per-call
-// 30s timeout all live here. Every other module calls `callLLM`.
+// Provider locking, retries, and the per-call 30s timeout all live here.
+// Every other module calls `callLLM`.
 //
-// PLAN.md §6 + §18 — do not move this logic anywhere else.
+// Default: provider locked to `anthropic`, allow_fallbacks=false (PLAN §6/§18).
+// Override: set OPENROUTER_PROVIDERS to a comma-separated list to lock to
+// a different provider (e.g. `z-ai` for GLM A/B test), or `*` / `any` to
+// remove the lock entirely and let OpenRouter route freely. The default
+// preserves the production invariant — only unset this on a test branch.
 
 import OpenAI, { APIError } from "openai";
 
@@ -93,6 +97,25 @@ function getModel(override?: string): string {
   return fromEnv;
 }
 
+type ProviderConfig = { order: string[]; allow_fallbacks: false };
+
+function getProviderConfig(): ProviderConfig | null {
+  const raw = process.env.OPENROUTER_PROVIDERS;
+  if (raw === undefined) {
+    return { order: ["anthropic"], allow_fallbacks: false };
+  }
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "*" || trimmed.toLowerCase() === "any") {
+    return null;
+  }
+  const order = trimmed
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (order.length === 0) return null;
+  return { order, allow_fallbacks: false };
+}
+
 function isRetryable(err: unknown): boolean {
   if (err instanceof APIError) {
     const status = err.status;
@@ -177,6 +200,7 @@ export async function callLLM(
     : (getClient() as unknown as LLMClientLike);
   const model = getModel(options?.model);
   const jsonMode = options?.jsonMode ?? true;
+  const providerConfig = getProviderConfig();
 
   let lastError: unknown = null;
 
@@ -195,7 +219,7 @@ export async function callLLM(
           ...(options?.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
           // OpenRouter-specific provider lock — not in OpenAI's body schema, but
           // structurally fine via LLMClientLike's `Record<string, unknown>` body.
-          provider: { order: ["anthropic"], allow_fallbacks: false },
+          ...(providerConfig ? { provider: providerConfig } : {}),
         },
         { signal: controller.signal },
       );

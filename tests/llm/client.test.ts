@@ -55,11 +55,15 @@ beforeEach(() => {
   // depend on shell state. (When _clientFactory is injected the OPENROUTER_API_KEY
   // path is skipped entirely.)
   process.env.OPENROUTER_MODEL = "anthropic/claude-sonnet-4.5";
+  // The provider override is opt-in; default to unset so the production
+  // anthropic lock is exercised by the existing invariant tests.
+  delete process.env.OPENROUTER_PROVIDERS;
 });
 
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  delete process.env.OPENROUTER_PROVIDERS;
 });
 
 /**
@@ -133,6 +137,44 @@ describe("callLLM provider lock (PLAN §6/§18 — non-negotiable invariant)", (
       order: ["anthropic"],
       allow_fallbacks: false,
     });
+  });
+});
+
+describe("callLLM provider override via OPENROUTER_PROVIDERS (A/B knob)", () => {
+  it("locks to a non-anthropic provider when OPENROUTER_PROVIDERS is set", async () => {
+    process.env.OPENROUTER_PROVIDERS = "z-ai";
+    const client = makeFakeClient(async () => okResponse());
+
+    await callLLM([{ role: "user", content: "hi" }], { _clientFactory: () => client });
+
+    const [body] = client.chat.completions.create.mock.calls[0]!;
+    expect((body as { provider: unknown }).provider).toEqual({
+      order: ["z-ai"],
+      allow_fallbacks: false,
+    });
+  });
+
+  it("supports a comma-separated provider list (ordered preference, no fallbacks)", async () => {
+    process.env.OPENROUTER_PROVIDERS = "z-ai, deepinfra";
+    const client = makeFakeClient(async () => okResponse());
+
+    await callLLM([{ role: "user", content: "hi" }], { _clientFactory: () => client });
+
+    const [body] = client.chat.completions.create.mock.calls[0]!;
+    expect((body as { provider: unknown }).provider).toEqual({
+      order: ["z-ai", "deepinfra"],
+      allow_fallbacks: false,
+    });
+  });
+
+  it("omits the provider field entirely when OPENROUTER_PROVIDERS=*", async () => {
+    process.env.OPENROUTER_PROVIDERS = "*";
+    const client = makeFakeClient(async () => okResponse());
+
+    await callLLM([{ role: "user", content: "hi" }], { _clientFactory: () => client });
+
+    const [body] = client.chat.completions.create.mock.calls[0]!;
+    expect(body).not.toHaveProperty("provider");
   });
 });
 
