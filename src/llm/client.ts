@@ -1,7 +1,7 @@
 // OpenRouter client wrapper.
 //
 // This file is the ONE place in the codebase that constructs an LLM request.
-// Provider locking, retries, and the per-call 30s timeout all live here.
+// Provider locking, retries, and the per-call 120s timeout all live here.
 // Every other module calls `callLLM`.
 //
 // Default: provider locked to `anthropic`, allow_fallbacks=false (PLAN §6/§18).
@@ -56,7 +56,7 @@ export class LLMCallFailed extends Error {
   }
 }
 
-const PER_ATTEMPT_TIMEOUT_MS = 30_000;
+const PER_ATTEMPT_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = [1_000, 2_000, 4_000] as const;
 
 let cachedClient: OpenAI | null = null;
@@ -244,8 +244,13 @@ export async function callLLM(
         throw err;
       }
 
-      // Decide whether to retry.
-      const canRetry = isRetryable(err);
+      // Decide whether to retry. If our OWN per-attempt timer aborted the
+      // request (controller aborted, caller's signal didn't), treat that as
+      // transient and retry — vision calls to slower providers (e.g. GLM)
+      // can exceed the previous 30s budget without being actually broken.
+      // Caller-initiated aborts are filtered out above and never reach here.
+      const isOurTimeout = controller.signal.aborted && !options?.signal?.aborted;
+      const canRetry = isOurTimeout || isRetryable(err);
       const isLastAttempt = attempt === RETRY_BACKOFF_MS.length - 1;
 
       if (!canRetry || isLastAttempt) {

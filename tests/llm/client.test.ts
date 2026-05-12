@@ -7,7 +7,8 @@
 //   2. Retry on 429 / 5xx with backoff and surface LLMCallFailed only after
 //      exhausting attempts.
 //   3. NOT retry on 4xx other than 429 — those are deterministic failures.
-//   4. Pass an AbortSignal so a 30s per-attempt timeout can fire.
+//   4. Pass an AbortSignal so a 120s per-attempt timeout can fire, and a
+//      timeout-induced abort (ours, not the caller's) is retried.
 //
 // We dependency-inject a fake client through the underscore-prefixed
 // `_clientFactory` option exposed on CallLLMOptions. Fake timers fast-forward
@@ -207,6 +208,35 @@ describe("callLLM retry behavior", () => {
       callLLM([{ role: "user", content: "x" }], { _clientFactory: () => client }),
     );
 
+    expect(client.chat.completions.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries when our own per-attempt timeout fires (not just on 429/5xx)", async () => {
+    let calls = 0;
+    const client = makeFakeClient(async (_body, opts) => {
+      calls += 1;
+      if (calls === 1) {
+        // Hang until the per-attempt timer aborts us; simulate the SDK's
+        // "user aborted a request" error in response.
+        await new Promise((_, reject) => {
+          opts.signal.addEventListener("abort", () => {
+            reject(new Error("The user aborted a request."));
+          });
+        });
+      }
+      return okResponse();
+    });
+
+    const promise = callLLM(
+      [{ role: "user", content: "x" }],
+      { _clientFactory: () => client },
+    );
+
+    // Past the 120s per-attempt timeout to fire the abort + drain microtasks
+    // through the catch path and the 1s backoff sleep into attempt 2.
+    await vi.advanceTimersByTimeAsync(125_000);
+
+    await promise;
     expect(client.chat.completions.create).toHaveBeenCalledTimes(2);
   });
 
