@@ -5,10 +5,9 @@ coverage/
 .DS_Store
 *.log
 
-# Local env
-.env
-.env.local
-.env.*.local
+# Local env — ignore all variants, opt-in only the example
+.env*
+!.env.example
 
 # Service account credentials — never commit
 # Block any *.json that looks like Google service-account credentials specifically.
@@ -28,3 +27,17 @@ client_secret_*.json
 
 # Vitest
 .vitest-cache/
+
+# TypeScript incremental build artifacts
+*.tsbuildinfo
+
+# Vercel
+.vercel/
+
+# Internal planning docs — keep local, don't publish
+PLAN.md
+NEXT.md
+STATUS_LOOKUP.md
+TEAM_LEAD_APPROVAL_PLAN.md
+frontend/AGENTS.md
+frontend/CLAUDE.md
