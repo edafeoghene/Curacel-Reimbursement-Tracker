@@ -11,6 +11,7 @@ import {
   approverDmAfterReject,
   approverDmBlocks,
   dmAfterCancel,
+  statusBlocks,
   CLARIFY_QUESTION_ACTION_ID,
   CLARIFY_QUESTION_BLOCK_ID,
   clarificationQuestionModal,
@@ -28,7 +29,7 @@ import {
   REJECT_REASON_BLOCK_ID,
   rejectionReasonModal,
 } from "../../src/slack/views.js";
-import type { Ticket } from "@curacel/shared";
+import type { Approval, Ticket } from "@curacel/shared";
 
 function makeTicket(overrides: Partial<Ticket> = {}): Ticket {
   return {
@@ -479,5 +480,220 @@ describe("delegateUserPickerModal", () => {
     expect(inputBlock).toBeDefined();
     expect(inputBlock?.element.action_id).toBe(DELEGATE_USER_ACTION_ID);
     expect(inputBlock?.element.type).toBe("users_select");
+  });
+});
+
+// ---------- statusBlocks (Phase 1.8 — /expense-status slash command) ----------
+
+function makeApproval(overrides: Partial<Approval> = {}): Approval {
+  return {
+    approval_id: "11111111-1111-1111-1111-111111111111",
+    tracking_id: "EXP-2605-A7K2",
+    step_number: 1,
+    approver_user_id: "UAPP1",
+    approver_name: "Kunle",
+    decision: "PENDING",
+    decided_at: null,
+    comment: "",
+    delegated_to_user_id: null,
+    dm_channel_id: "D1",
+    message_ts: "1715250100.000200",
+    ...overrides,
+  };
+}
+
+const FROZEN_NOW = new Date("2026-05-09T13:00:00.000Z");
+
+function collectMrkdwn(blocks: Array<Record<string, unknown>>): string {
+  // Flatten every mrkdwn text we render into a single string so individual
+  // assertions can use substring matches without depending on block ordering.
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (!v || typeof v !== "object") return;
+    const o = v as Record<string, unknown>;
+    if (o.type === "mrkdwn" && typeof o.text === "string") out.push(o.text);
+    for (const val of Object.values(o)) {
+      if (Array.isArray(val)) val.forEach(walk);
+      else if (val && typeof val === "object") walk(val);
+    }
+  };
+  blocks.forEach(walk);
+  return out.join("\n");
+}
+
+describe("statusBlocks", () => {
+  it("renders a header + summary fields + 'Currently with' for an AWAITING_APPROVAL ticket with no decisions yet", () => {
+    const ticket = makeTicket({
+      status: "AWAITING_APPROVAL",
+      current_step: 1,
+      current_approver_user_id: "UAPP1",
+    });
+    const approvals = [makeApproval({ decision: "PENDING" })];
+
+    const { blocks, fallbackText } = statusBlocks(ticket, approvals, {
+      now: FROZEN_NOW,
+    });
+
+    expect(blocks[0]).toMatchObject({ type: "header" });
+    expect(fallbackText).toContain("EXP-2605-A7K2");
+    expect(fallbackText).toContain("AWAITING_APPROVAL");
+
+    const text = collectMrkdwn(blocks);
+    expect(text).toContain("AWAITING_APPROVAL");
+    expect(text).toContain("step 1");
+    // current_approver_user_id rendered as a Slack mention
+    expect(text).toContain("<@UAPP1>");
+    expect(text).toContain("EXP-2605-A7K2");
+    // Submitted line shows both absolute UTC and relative "ago"
+    expect(text).toMatch(/Submitted/);
+    expect(text).toMatch(/ago/);
+  });
+
+  it("shows step-1 APPROVED in the timeline and routes 'Currently with' to step 2", () => {
+    const ticket = makeTicket({
+      status: "AWAITING_APPROVAL",
+      current_step: 2,
+      current_approver_user_id: "UAPP2",
+    });
+    const approvals = [
+      makeApproval({
+        step_number: 1,
+        approver_user_id: "UAPP1",
+        approver_name: "Kunle",
+        decision: "APPROVED",
+        decided_at: "2026-05-09T11:00:00.000Z",
+      }),
+      makeApproval({
+        step_number: 2,
+        approver_user_id: "UAPP2",
+        approver_name: "Tola",
+        decision: "PENDING",
+      }),
+    ];
+
+    const { blocks } = statusBlocks(ticket, approvals, { now: FROZEN_NOW });
+    const text = collectMrkdwn(blocks);
+
+    expect(text).toContain("<@UAPP2>"); // currently-with line
+    expect(text).toContain(":white_check_mark:"); // step-1 approved
+    expect(text).toContain("Step 1");
+    expect(text).toContain("Step 2");
+    expect(text).toContain(":hourglass_flowing_sand:"); // step-2 pending
+  });
+
+  it("suppresses 'Currently with' on terminal statuses (PAID / REJECTED / CANCELLED)", () => {
+    // APPROVED is non-terminal: the FM holds the ball for Mark-as-Paid, so
+    // 'Currently with: @FM' is still informative there. See isTerminalStatus.
+    for (const status of ["PAID", "REJECTED", "CANCELLED"] as const) {
+      const ticket = makeTicket({ status });
+      const { blocks } = statusBlocks(ticket, [], { now: FROZEN_NOW });
+      const text = collectMrkdwn(blocks);
+      expect(text).not.toMatch(/Currently with/i);
+    }
+  });
+
+  it("renders a REJECTED row with reason from the comment field", () => {
+    const ticket = makeTicket({ status: "REJECTED" });
+    const approvals = [
+      makeApproval({
+        decision: "REJECTED",
+        decided_at: "2026-05-09T11:30:00.000Z",
+        comment: "Receipt unreadable — please re-upload.",
+      }),
+    ];
+
+    const { blocks } = statusBlocks(ticket, approvals, { now: FROZEN_NOW });
+    const text = collectMrkdwn(blocks);
+
+    expect(text).toContain(":x:");
+    expect(text).toContain("Receipt unreadable");
+  });
+
+  it("renders a CLARIFICATION_REQUESTED row with the question from the comment field", () => {
+    const ticket = makeTicket({ status: "NEEDS_CLARIFICATION" });
+    const approvals = [
+      makeApproval({
+        decision: "CLARIFICATION_REQUESTED",
+        decided_at: "2026-05-09T11:15:00.000Z",
+        comment: "Who is this laptop for?",
+      }),
+    ];
+
+    const { blocks } = statusBlocks(ticket, approvals, { now: FROZEN_NOW });
+    const text = collectMrkdwn(blocks);
+
+    expect(text).toContain(":question:");
+    expect(text).toContain("Who is this laptop for?");
+  });
+
+  it("renders a DELEGATED row with arrow notation showing the new approver", () => {
+    const ticket = makeTicket({ status: "AWAITING_APPROVAL" });
+    const approvals = [
+      makeApproval({
+        decision: "DELEGATED",
+        decided_at: "2026-05-09T11:45:00.000Z",
+        delegated_to_user_id: "UAPP_NEW",
+      }),
+    ];
+
+    const { blocks } = statusBlocks(ticket, approvals, { now: FROZEN_NOW });
+    const text = collectMrkdwn(blocks);
+
+    expect(text).toContain(":busts_in_silhouette:");
+    expect(text).toContain("<@UAPP_NEW>");
+  });
+
+  it("shows a triage note instead of an empty timeline when the ticket is in MANUAL_REVIEW", () => {
+    const ticket = makeTicket({
+      status: "MANUAL_REVIEW",
+      current_step: 0,
+      current_approver_user_id: "",
+    });
+
+    const { blocks } = statusBlocks(ticket, [], { now: FROZEN_NOW });
+    const text = collectMrkdwn(blocks);
+
+    expect(text).toContain("MANUAL_REVIEW");
+    expect(text).toMatch(/triage|manual review/i);
+    expect(text).not.toMatch(/Currently with/i);
+  });
+
+  it("includes the receipt context block when receipt_file_url is set, omits it otherwise", () => {
+    const withReceipt = statusBlocks(makeTicket(), [], { now: FROZEN_NOW }).blocks;
+    expect(withReceipt.find((b) => b.type === "context")).toBeDefined();
+
+    const withoutReceipt = statusBlocks(
+      makeTicket({ receipt_file_url: "", receipt_file_id: "" }),
+      [],
+      { now: FROZEN_NOW },
+    ).blocks;
+    // No receipt + no other context blocks expected from this builder
+    expect(withoutReceipt.find((b) => b.type === "context")).toBeUndefined();
+  });
+
+  it("orders the timeline by step_number ascending", () => {
+    const ticket = makeTicket({ status: "APPROVED" });
+    // Pass approvals out of order to make sure the renderer sorts them.
+    const approvals = [
+      makeApproval({
+        step_number: 2,
+        decision: "APPROVED",
+        decided_at: "2026-05-09T12:00:00.000Z",
+        approver_user_id: "UAPP2",
+      }),
+      makeApproval({
+        step_number: 1,
+        decision: "APPROVED",
+        decided_at: "2026-05-09T11:00:00.000Z",
+        approver_user_id: "UAPP1",
+      }),
+    ];
+
+    const { blocks } = statusBlocks(ticket, approvals, { now: FROZEN_NOW });
+    const text = collectMrkdwn(blocks);
+    const idx1 = text.indexOf("Step 1");
+    const idx2 = text.indexOf("Step 2");
+    expect(idx1).toBeGreaterThan(-1);
+    expect(idx2).toBeGreaterThan(idx1);
   });
 });

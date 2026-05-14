@@ -21,7 +21,7 @@ import { safeAudit } from "../sheets/audit.js";
 import { postFeedLine } from "./feed.js";
 import { dmUser, updateMessage } from "./messaging.js";
 import { fetchUserName } from "./users.js";
-import { approverDmBlocks, dmAfterCancel } from "./views.js";
+import { approverDmBlocks, dmAfterCancel, statusBlocks } from "./views.js";
 
 interface Deps {
   config: Config;
@@ -395,9 +395,85 @@ function makeExpenseCancelHandler({ config }: Deps) {
   };
 }
 
+// ---------- /expense-status (Phase 1.8) ----------
+
+/**
+ * Read-only status lookup. Open to anyone in the workspace (Option A in
+ * STATUS_LOOKUP.md): tracking IDs aren't secrets and the data surfaced is
+ * non-PII. If a sheet read fails, we degrade rather than hide — a ticket
+ * lookup error returns "see server logs"; an approvals lookup error still
+ * renders the ticket section with an empty timeline note.
+ */
+function makeExpenseStatusHandler() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (args: any): Promise<void> => {
+    await args.ack();
+
+    const command = args.command as { text?: string };
+    const respond = args.respond as (msg: {
+      response_type?: "ephemeral" | "in_channel";
+      text?: string;
+      blocks?: unknown;
+    }) => Promise<unknown>;
+    const text = command.text ?? "";
+
+    const trackingId = parseTrackingIdArg(text);
+    if (!trackingId) {
+      await respond({
+        response_type: "ephemeral",
+        text: "Usage: `/expense-status EXP-YYMM-XXXX`",
+      });
+      return;
+    }
+
+    let ticket: Ticket | null;
+    try {
+      ticket = await getTicketByTrackingId(trackingId);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[slash] getTicketByTrackingId(status) failed:", err);
+      await respond({
+        response_type: "ephemeral",
+        text: `Could not look up \`${trackingId}\`. See server logs.`,
+      });
+      return;
+    }
+
+    if (!ticket) {
+      await respond({
+        response_type: "ephemeral",
+        text: `Ticket \`${trackingId}\` not found.`,
+      });
+      return;
+    }
+
+    // Best-effort: if the approvals tab read fails, render the ticket
+    // section anyway with an empty-timeline fallback note.
+    let approvals: Approval[] = [];
+    try {
+      approvals = await listApprovalsForTicket(trackingId);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[slash] listApprovalsForTicket(status) failed:",
+        err,
+      );
+    }
+
+    const { blocks, fallbackText } = statusBlocks(ticket, approvals);
+    await respond({
+      response_type: "ephemeral",
+      text: fallbackText,
+      blocks,
+    });
+  };
+}
+
 export function registerSlashCommands(app: App, deps: Deps): void {
   const resumeHandler = makeExpenseResumeHandler(deps);
   const cancelHandler = makeExpenseCancelHandler(deps);
+  const statusHandler = makeExpenseStatusHandler();
   app.command("/expense-resume", resumeHandler);
   app.command("/expense-cancel", cancelHandler);
+  app.command("/expense-status", statusHandler);
 }

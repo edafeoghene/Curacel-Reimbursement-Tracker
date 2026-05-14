@@ -17,7 +17,7 @@
 // rides on `private_metadata` so the submit handler doesn't depend on a
 // stale button value.
 
-import type { Ticket } from "@curacel/shared";
+import { isTerminalStatus, type Approval, type Ticket } from "@curacel/shared";
 
 export type Block = Record<string, unknown>;
 
@@ -603,5 +603,158 @@ export function manualReviewDmBlocks(
   if (ctx) blocks.push(ctx);
 
   const fallbackText = `Manual review needed: ${ticket.tracking_id}`;
+  return { blocks, fallbackText };
+}
+
+// ---------- /expense-status (Phase 1.8) ----------
+
+function dateTimeUTC(d: Date): string {
+  const day = d.toLocaleDateString("en-US", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    timeZone: "UTC",
+  });
+  return `${day}, ${hhmm(d)}`;
+}
+
+function relativeAgo(then: Date, now: Date): string {
+  const ms = Math.max(0, now.getTime() - then.getTime());
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  return `${days}d ago`;
+}
+
+function slackTsToDate(ts: string): Date | null {
+  // Slack message_ts is seconds.microseconds as a string.
+  const sec = parseFloat(ts);
+  if (!Number.isFinite(sec) || sec <= 0) return null;
+  return new Date(sec * 1000);
+}
+
+function approvalLine(a: Approval): string {
+  const who = `<@${a.approver_user_id}>`;
+  const decidedAt = a.decided_at ? new Date(a.decided_at) : null;
+  const decidedAtStr = decidedAt ? dateTimeUTC(decidedAt) : null;
+
+  switch (a.decision) {
+    case "APPROVED":
+      return `:white_check_mark: *Step ${a.step_number}* — ${who} — approved${decidedAtStr ? ` at ${decidedAtStr}` : ""}`;
+    case "REJECTED":
+      return `:x: *Step ${a.step_number}* — ${who} — rejected${decidedAtStr ? ` at ${decidedAtStr}` : ""}${a.comment ? `\n*Reason:* ${a.comment}` : ""}`;
+    case "CLARIFICATION_REQUESTED":
+      return `:question: *Step ${a.step_number}* — ${who} — asked for clarification${decidedAtStr ? ` at ${decidedAtStr}` : ""}${a.comment ? `\n*Question:* ${a.comment}` : ""}`;
+    case "DELEGATED": {
+      const to = a.delegated_to_user_id ? `<@${a.delegated_to_user_id}>` : "(unknown)";
+      return `:busts_in_silhouette: *Step ${a.step_number}* — ${who} → ${to}${decidedAtStr ? ` at ${decidedAtStr}` : ""}`;
+    }
+    case "PENDING": {
+      const sentAt = slackTsToDate(a.message_ts);
+      const sinceStr = sentAt ? ` (since ${dateTimeUTC(sentAt)})` : "";
+      return `:hourglass_flowing_sand: *Step ${a.step_number}* — ${who} — awaiting${sinceStr}`;
+    }
+    default:
+      // Defensive: future-proof against new APPROVAL_DECISIONS members. The
+      // compiler will catch unhandled cases via exhaustive-switch elsewhere;
+      // here we just degrade gracefully instead of throwing in a Slack reply.
+      return `*Step ${a.step_number}* — ${who} — ${a.decision as string}`;
+  }
+}
+
+/**
+ * Read-only status panel rendered by `/expense-status`. No buttons — any
+ * mutations go through the dedicated /expense-resume and /expense-cancel
+ * handlers. Pure function: handler passes `now` so tests are deterministic.
+ */
+export function statusBlocks(
+  ticket: Ticket,
+  approvals: Approval[],
+  opts: { now?: Date } = {},
+): { blocks: Block[]; fallbackText: string } {
+  const now = opts.now ?? new Date();
+  const terminal = isTerminalStatus(ticket.status);
+  const isManualReview = ticket.status === "MANUAL_REVIEW";
+
+  const blocks: Block[] = [
+    header(`Status: ${ticket.tracking_id}`),
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: terminal || isManualReview
+          ? `*${ticket.status}*`
+          : `*${ticket.status}* (step ${ticket.current_step})`,
+      },
+    },
+    summaryFields(ticket),
+  ];
+
+  if (!terminal && !isManualReview && ticket.current_approver_user_id) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Currently with:* <@${ticket.current_approver_user_id}>`,
+      },
+    });
+  }
+
+  // Submitted line — best-effort. Fall back to source_message_ts if
+  // created_at can't be parsed (defensive; should never happen in practice).
+  const createdAt = ticket.created_at ? new Date(ticket.created_at) : null;
+  const submittedAt =
+    createdAt && !Number.isNaN(createdAt.getTime())
+      ? createdAt
+      : slackTsToDate(ticket.source_message_ts);
+  if (submittedAt) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Submitted:* ${dateTimeUTC(submittedAt)} (${relativeAgo(submittedAt, now)})`,
+      },
+    });
+  }
+
+  blocks.push(divider());
+
+  if (approvals.length === 0) {
+    const note = isManualReview
+      ? "_Awaiting triage — LLM extraction failed or no route matched. The financial manager will handle this manually._"
+      : "_No decisions recorded yet._";
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `*Timeline*\n${note}` },
+    });
+  } else {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: "*Timeline*" },
+    });
+    const ordered = [...approvals].sort((a, b) => {
+      if (a.step_number !== b.step_number) return a.step_number - b.step_number;
+      // Within a step, order by decided_at (nulls last so PENDING shows after
+      // historical decisions for the same step).
+      const at = a.decided_at ? Date.parse(a.decided_at) : Number.POSITIVE_INFINITY;
+      const bt = b.decided_at ? Date.parse(b.decided_at) : Number.POSITIVE_INFINITY;
+      return at - bt;
+    });
+    for (const a of ordered) {
+      blocks.push({
+        type: "section",
+        text: { type: "mrkdwn", text: approvalLine(a) },
+      });
+    }
+  }
+
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  const fallbackText = `Status: ${ticket.tracking_id} — ${ticket.status}`;
   return { blocks, fallbackText };
 }
