@@ -211,13 +211,13 @@ function FiltersForm({
           defaultValue={filters.requesterUserId ?? ""}
         />
       </Field>
-      <Field label="Route">
+      <Field label="Team">
         <select
           name="route"
           defaultValue={filters.routeId ?? ""}
           className="h-9 w-full rounded-md border border-zinc-200 bg-white px-2 text-sm dark:border-zinc-800 dark:bg-zinc-950"
         >
-          <option value="">All routes</option>
+          <option value="">All teams</option>
           {routes.map((r) => (
             <option key={r} value={r}>
               {r}
@@ -288,7 +288,7 @@ function TicketsTable({ rows }: { rows: Ticket[] }) {
             <th className="px-4 py-2 font-medium">Description</th>
             <th className="px-4 py-2 text-right font-medium">Amount</th>
             <th className="px-4 py-2 font-medium">Status</th>
-            <th className="px-4 py-2 font-medium">Route</th>
+            <th className="px-4 py-2 font-medium">Team</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">

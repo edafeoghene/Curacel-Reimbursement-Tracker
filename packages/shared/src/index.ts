@@ -99,24 +99,16 @@ export interface AuditLogEntry {
   details_json: string; // stringified JSON of the event payload
 }
 
-// Routes sheet shape (raw row before parsing)
-export interface RouteRow {
-  route_id: string;
-  currency: string;
-  min_amount: number;
-  max_amount: number | null; // null = no upper bound
-  category_filter: string; // CSV
-  approvers_csv: string; // CSV of Slack user IDs in order
-}
-
-// Parsed/normalized route used by routing logic
-export interface Route {
-  route_id: string;
-  currency: string;
-  min_amount: number;
-  max_amount: number | null;
-  category_filter: string[]; // empty array = all categories
-  approvers: string[]; // ordered chain
+// Employee directory row — drives team-lead approval routing. Headers in the
+// sheet are human-friendly ("Employee Name", "Team Slack Channel" etc.) and
+// some carry trailing whitespace; the loader normalizes both.
+export interface Employee {
+  employee_name: string;
+  team_lead_name: string;
+  team: string;
+  employee_slack_id: string; // U…
+  team_lead_slack_id: string; // U… (may be empty / invalid — checked downstream)
+  team_channel_id: string; // C… or G… (may be empty / invalid — checked downstream)
 }
 
 // ---------- State machine ----------
@@ -134,6 +126,11 @@ export type StateEvent =
   | { type: "MARK_AS_PAID" }
   | { type: "PAYMENT_CONFIRMED"; file_id: string }
   | { type: "CANCEL"; actor_user_id: string }
+  // FM clicked "Approve & Pay" on a manual-review DM. Legal only from
+  // MANUAL_REVIEW. Transitions straight to APPROVED with the standard
+  // DM_FINANCIAL_MANAGER_FOR_PAYMENT side effect — from there the existing
+  // Mark-as-Paid flow takes over.
+  | { type: "FM_APPROVE_FROM_MANUAL_REVIEW"; fm_user_id: string }
   // Recovery escalation. Legal from any non-terminal status. Used when an
   // out-of-band failure (DM rejected, route deleted mid-flight, approval row
   // write failed, etc.) leaves a ticket in a state that can't proceed via the
@@ -194,7 +191,7 @@ export interface ClassifyInput {
 // ---------- Sheet schema (column order + tab names) ----------
 // Both bot reads/writes and the frontend read layer reference these. The
 // `as const satisfies readonly (keyof X)[]` clauses are compile-time guards:
-// if a Ticket / Approval / AuditLogEntry / RouteRow field is renamed or
+// if a Ticket / Approval / AuditLogEntry / Employee field is renamed or
 // added, the corresponding header array fails to typecheck.
 
 export const TICKETS_HEADERS = [
@@ -242,25 +239,29 @@ export const AUDIT_LOG_HEADERS = [
   "details_json",
 ] as const satisfies readonly (keyof AuditLogEntry)[];
 
-export const ROUTES_HEADERS = [
-  "route_id",
-  "currency",
-  "min_amount",
-  "max_amount",
-  "category_filter",
-  "approvers_csv",
-] as const satisfies readonly (keyof RouteRow)[];
+// EMPLOYEES_HEADERS captures the *order* of columns in the "Employee data"
+// tab. The actual header cells in the sheet use display-friendly names
+// ("Employee Name", "Team Slack Channel" — some with trailing whitespace),
+// so this tab is intentionally NOT included in ALL_TABS and is not managed
+// by the bootstrap script. The loader matches by position, not by name.
+export const EMPLOYEES_HEADERS = [
+  "employee_name",
+  "team_lead_name",
+  "team",
+  "employee_slack_id",
+  "team_lead_slack_id",
+  "team_channel_id",
+] as const satisfies readonly (keyof Employee)[];
 
 export const TAB_TICKETS = "tickets";
 export const TAB_APPROVALS = "approvals";
 export const TAB_AUDIT_LOG = "audit_log";
-export const TAB_ROUTES = "routes";
+export const TAB_EMPLOYEES = "Employee data";
 
 export const ALL_TABS = [
   { name: TAB_TICKETS, headers: TICKETS_HEADERS as readonly string[] },
   { name: TAB_APPROVALS, headers: APPROVALS_HEADERS as readonly string[] },
   { name: TAB_AUDIT_LOG, headers: AUDIT_LOG_HEADERS as readonly string[] },
-  { name: TAB_ROUTES, headers: ROUTES_HEADERS as readonly string[] },
 ] as const;
 
 // ---------- Audit event types (kept as string constants for grep-ability) ----------

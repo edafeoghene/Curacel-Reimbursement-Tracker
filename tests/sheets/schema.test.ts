@@ -1,17 +1,17 @@
-// If someone adds a column to a Ticket / Approval / AuditLogEntry / RouteRow
+// If someone adds a column to a Ticket / Approval / AuditLogEntry / Employee
 // type and forgets to update the matching header constant, this test fails.
 
 import { describe, expect, it } from "vitest";
 import {
   APPROVALS_HEADERS,
   AUDIT_LOG_HEADERS,
-  ROUTES_HEADERS,
+  EMPLOYEES_HEADERS,
   TICKETS_HEADERS,
 } from "@curacel/shared";
 import type {
   Approval,
   AuditLogEntry,
-  RouteRow,
+  Employee,
   Ticket,
 } from "@curacel/shared";
 
@@ -68,14 +68,14 @@ const AUDIT_FIELDS = [
   "details_json",
 ] as const satisfies readonly (keyof AuditLogEntry)[];
 
-const ROUTE_FIELDS = [
-  "route_id",
-  "currency",
-  "min_amount",
-  "max_amount",
-  "category_filter",
-  "approvers_csv",
-] as const satisfies readonly (keyof RouteRow)[];
+const EMPLOYEE_FIELDS = [
+  "employee_name",
+  "team_lead_name",
+  "team",
+  "employee_slack_id",
+  "team_lead_slack_id",
+  "team_channel_id",
+] as const satisfies readonly (keyof Employee)[];
 
 describe("schema headers cover every field on the corresponding type", () => {
   it("TICKETS_HEADERS matches Ticket fields exactly and in order", () => {
@@ -90,8 +90,8 @@ describe("schema headers cover every field on the corresponding type", () => {
     expect([...AUDIT_LOG_HEADERS]).toEqual([...AUDIT_FIELDS]);
   });
 
-  it("ROUTES_HEADERS matches RouteRow fields exactly and in order", () => {
-    expect([...ROUTES_HEADERS]).toEqual([...ROUTE_FIELDS]);
+  it("EMPLOYEES_HEADERS matches Employee fields exactly and in order", () => {
+    expect([...EMPLOYEES_HEADERS]).toEqual([...EMPLOYEE_FIELDS]);
   });
 
   it("there are no duplicate columns within any header set", () => {
@@ -99,7 +99,7 @@ describe("schema headers cover every field on the corresponding type", () => {
       TICKETS_HEADERS,
       APPROVALS_HEADERS,
       AUDIT_LOG_HEADERS,
-      ROUTES_HEADERS,
+      EMPLOYEES_HEADERS,
     ]) {
       expect(new Set(headers).size).toBe(headers.length);
     }

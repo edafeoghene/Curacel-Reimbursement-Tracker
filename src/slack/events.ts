@@ -25,9 +25,11 @@ import {
   listNonTerminalTickets,
   updateTicket,
 } from "../sheets/tickets.js";
-import { resolveRoute } from "../state/routing.js";
 import { transition } from "../state/machine.js";
-import { getCachedRoutes } from "../sheets/routes.js";
+import {
+  EmployeesNotLoadedError,
+  lookupCachedEmployeeBySlackId,
+} from "../sheets/employees.js";
 import {
   AUDIT_EVENTS,
   PAYMENT_STEP_SENTINEL,
@@ -45,7 +47,11 @@ import { extractPdfPage1AsImage } from "../llm/pdf.js";
 import { postFeedLine } from "./feed.js";
 import { ackInThread, dmUser, postEphemeral } from "./messaging.js";
 import { fetchUserName } from "./users.js";
-import { approverDmBlocks, manualReviewDmBlocks } from "./views.js";
+import {
+  fmInfoDmBlocks,
+  manualReviewDmBlocks,
+  teamChannelApprovalBlocks,
+} from "./views.js";
 
 const AMOUNT_REGEX =
   /(?:[₦$€£]\s*\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:NGN|USD|EUR|GBP)\b)/i;
@@ -710,12 +716,18 @@ async function processOneItem(
     return { kind: "manual", trackingId: id, reason, item };
   }
 
-  // Resolve route.
-  let routes;
+  // Look up the requester in the Employee directory. Each failure mode
+  // (missing row, no team lead, no team channel, lead == requester, invalid
+  // IDs) falls back to MANUAL_REVIEW with a specific reason so the FM can
+  // see what to fix in the sheet.
+  let employee;
   try {
-    routes = getCachedRoutes();
-  } catch {
-    const reason = "Routes cache not loaded";
+    employee = lookupCachedEmployeeBySlackId(userId);
+  } catch (err) {
+    const reason =
+      err instanceof EmployeesNotLoadedError
+        ? "Employee cache not loaded"
+        : `Employee lookup failed: ${(err as Error).message}`;
     const id = await routeToManualReview({
       client,
       config,
@@ -731,9 +743,8 @@ async function processOneItem(
     return { kind: "manual", trackingId: id, reason, item };
   }
 
-  const route = resolveRoute(routes, item.amount, item.currency, item.category);
-  if (!route) {
-    const reason = `No matching route for ${item.currency} ${item.amount} (${item.category})`;
+  if (!employee) {
+    const reason = `Requester <@${userId}> is not in the Employee data sheet`;
     const id = await routeToManualReview({
       client,
       config,
@@ -749,11 +760,51 @@ async function processOneItem(
     return { kind: "manual", trackingId: id, reason, item };
   }
 
-  // First approver of the chain — multi-step routing (Phase 1.5) handles
-  // the rest of the chain after each Approve.
-  const approverId = route.approvers[0];
-  if (!approverId) {
-    const reason = `Route ${route.route_id} has no approvers`;
+  const leadId = employee.team_lead_slack_id;
+  if (!leadId || !/^U[A-Z0-9]+$/.test(leadId)) {
+    const reason = `Employee row for <@${userId}> is missing a valid Team Lead Slack ID`;
+    const id = await routeToManualReview({
+      client,
+      config,
+      sourceTs,
+      channelId: config.EXPENSES_CHANNEL_ID,
+      userId,
+      text,
+      primary,
+      reason,
+      classifierItem: item,
+      confidence: classifier.confidence,
+    });
+    return { kind: "manual", trackingId: id, reason, item };
+  }
+
+  if (leadId === userId) {
+    if (config.TEST_SELF_APPROVAL_BYPASS_USERS.includes(userId)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[events] TEST_SELF_APPROVAL_BYPASS_USERS active for <@${userId}> — allowing self-approval for testing.`,
+      );
+    } else {
+      const reason = `<@${userId}> is listed as their own team lead — cannot self-approve`;
+      const id = await routeToManualReview({
+        client,
+        config,
+        sourceTs,
+        channelId: config.EXPENSES_CHANNEL_ID,
+        userId,
+        text,
+        primary,
+        reason,
+        classifierItem: item,
+        confidence: classifier.confidence,
+      });
+      return { kind: "manual", trackingId: id, reason, item };
+    }
+  }
+
+  const teamChannelId = employee.team_channel_id;
+  if (!teamChannelId || !/^[CG][A-Z0-9]+$/.test(teamChannelId)) {
+    const reason = `Employee row for <@${userId}> is missing a valid Team Slack Channel`;
     const id = await routeToManualReview({
       client,
       config,
@@ -802,9 +853,12 @@ async function processOneItem(
     receipt_file_id: primary?.id ?? "",
     receipt_file_url: primary?.url_private ?? "",
     status: "SUBMITTED",
-    route_id: route.route_id,
+    // route_id no longer carries routing meaning under the team-lead flow.
+    // Repurposed here to carry the requester's team name for traceability;
+    // a proper sheet rename to `team` is a follow-up.
+    route_id: employee.team,
     current_step: 1,
-    current_approver_user_id: approverId,
+    current_approver_user_id: leadId,
     payment_confirmation_file_id: null,
     updated_at: nowIso,
     row_version: 1,
@@ -829,7 +883,9 @@ async function processOneItem(
     actor_user_id: userId,
     event_type: AUDIT_EVENTS.TICKET_CREATED,
     details: {
-      route_id: route.route_id,
+      team: employee.team,
+      team_lead_user_id: leadId,
+      team_channel_id: teamChannelId,
       amount: item.amount,
       currency: item.currency,
       category: item.category,
@@ -886,15 +942,28 @@ async function processOneItem(
     });
   }
 
-  // DM the approver.
-  let dm: { channel: string; ts: string };
+  // Post the buttoned approval message in the team channel.
+  let post: { channel: string; ts: string };
   try {
-    const { blocks, fallbackText } = approverDmBlocks(ticket);
-    dm = await dmUser(client, approverId, blocks, fallbackText);
+    const { blocks, fallbackText } = teamChannelApprovalBlocks(ticket, leadId);
+    const res = await client.chat.postMessage({
+      channel: teamChannelId,
+      text: fallbackText,
+      // Bolt's discriminated-union types reject our generic Block shape; we
+      // mirror the cast used by the messaging helpers.
+      blocks: blocks as unknown as never,
+    });
+    if (!res.ts) {
+      throw new Error(`chat.postMessage returned no ts for channel ${teamChannelId}`);
+    }
+    post = { channel: teamChannelId, ts: res.ts };
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("[events] approver DM failed:", err);
-    const reason = `Failed to DM approver <@${approverId}>: ${(err as Error).message}`;
+    console.error("[events] team-channel post failed:", err);
+    const errMsg = (err as Error).message ?? String(err);
+    const reason = /not_in_channel/i.test(errMsg)
+      ? `Bot is not a member of <#${teamChannelId}> — invite the expense bot to that channel`
+      : `Failed to post in <#${teamChannelId}>: ${errMsg}`;
     await escalateToManualReview({
       client,
       config,
@@ -905,26 +974,28 @@ async function processOneItem(
     return {
       kind: "manual",
       trackingId,
-      reason: `DM to <@${approverId}> failed`,
+      reason,
       item,
     };
   }
 
-  // Append the approval row.
-  const approverName = await fetchUserName(client, approverId);
+  // Append the approval row. `dm_channel_id` + `message_ts` now point at the
+  // team-channel post (not a DM); the field names are kept for sheet-schema
+  // stability — they identify the message that gets edited after a decision.
+  const leadName = await fetchUserName(client, leadId);
   try {
     await appendApproval({
       approval_id: uuidv4(),
       tracking_id: trackingId,
       step_number: 1,
-      approver_user_id: approverId,
-      approver_name: approverName,
+      approver_user_id: leadId,
+      approver_name: leadName,
       decision: "PENDING",
       decided_at: null,
       comment: "",
       delegated_to_user_id: null,
-      dm_channel_id: dm.channel,
-      message_ts: dm.ts,
+      dm_channel_id: post.channel,
+      message_ts: post.ts,
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -942,6 +1013,32 @@ async function processOneItem(
       reason: "Could not append approval row",
       item,
     };
+  }
+
+  // FM informational DM — best-effort. The team lead is the sole approver,
+  // so this carries no buttons; it just gives the FM real-time visibility.
+  try {
+    let permalink: string | null = null;
+    try {
+      const r = await client.chat.getPermalink({
+        channel: post.channel,
+        message_ts: post.ts,
+      });
+      permalink = r.permalink ?? null;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[events] chat.getPermalink failed (continuing):", err);
+    }
+    const { blocks, fallbackText } = fmInfoDmBlocks(
+      ticket,
+      leadId,
+      employee.team,
+      permalink,
+    );
+    await dmUser(client, config.FINANCIAL_MANAGER_USER_ID, blocks, fallbackText);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[events] FM informational DM failed (continuing):", err);
   }
 
   // FIRST_DM_SENT transition.
@@ -973,14 +1070,14 @@ async function processOneItem(
   await postFeedLine(
     client,
     config,
-    `:inbox_tray: New: \`${trackingId}\` from <@${userId}> — ${item.currency} ${formatAmount(item.amount)} (${item.category}) → <@${approverId}>`,
+    `:inbox_tray: New: \`${trackingId}\` from <@${userId}> — ${item.currency} ${formatAmount(item.amount)} (${item.category}) → <@${leadId}> in <#${teamChannelId}>`,
   );
 
   return {
     kind: "ok",
     trackingId,
-    approverId,
-    routeId: route.route_id,
+    approverId: leadId,
+    routeId: employee.team,
     item,
   };
 }

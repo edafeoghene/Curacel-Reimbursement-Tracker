@@ -12,7 +12,11 @@ const { App, LogLevel } = bolt;
 
 import { loadConfig } from "./config.js";
 import { createHealthApp } from "./health.js";
-import { loadRoutes, startRoutesRefresh, stopRoutesRefresh } from "./sheets/routes.js";
+import {
+  loadEmployees,
+  startEmployeesRefresh,
+  stopEmployeesRefresh,
+} from "./sheets/employees.js";
 import { listNonTerminalTickets } from "./sheets/tickets.js";
 import { registerMessageHandler } from "./slack/events.js";
 import { registerInteractivity } from "./slack/interactivity.js";
@@ -43,23 +47,21 @@ async function main(): Promise<void> {
     console.info(`[health] listening on :${config.PORT}`);
   });
 
-  // Routes (config) — fail loudly if the sheet is malformed/missing.
+  // Employee directory — drives team-lead approval routing. Bad rows are
+  // skipped with a warning rather than crashing boot (loader logs them).
   // eslint-disable-next-line no-console
-  console.info("[boot] loading routes from sheet...");
-  let routes;
+  console.info("[boot] loading employees from sheet...");
+  let employees;
   try {
-    routes = await loadRoutes();
+    employees = await loadEmployees();
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("[boot] loadRoutes failed:", err);
+    console.error("[boot] loadEmployees failed:", err);
     process.exit(1);
   }
   // eslint-disable-next-line no-console
-  console.info(
-    `[boot] loaded ${routes.length} route(s):`,
-    routes.map((r) => r.route_id).join(", "),
-  );
-  startRoutesRefresh();
+  console.info(`[boot] loaded ${employees.length} employee(s).`);
+  startEmployeesRefresh();
 
   // Boot reconciliation — inventory non-terminal tickets, no auto-fix.
   try {
@@ -102,7 +104,7 @@ async function main(): Promise<void> {
     console.info(`[boot] ${sig} received — shutting down...`);
     healthState.setSocketReady(false);
     try {
-      stopRoutesRefresh();
+      stopEmployeesRefresh();
     } catch {
       // ignore
     }

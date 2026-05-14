@@ -75,7 +75,7 @@ function HeaderCard({ ticket }: { ticket: Ticket }) {
           <span className="ml-1 font-mono text-xs text-zinc-500">({ticket.requester_user_id})</span>
         </Row>
         <Row label="Category">{ticket.category || "—"}</Row>
-        <Row label="Route">
+        <Row label="Team">
           <span className="font-mono text-xs">{ticket.route_id || "—"}</span>
         </Row>
         <Row label="Current step">

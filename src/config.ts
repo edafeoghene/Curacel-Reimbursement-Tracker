@@ -103,6 +103,12 @@ const Schema = z.object({
   PORT: portSchema,
   NODE_ENV: z.string().optional().default("development"),
   LOG_LEVEL: z.string().optional().default("info"),
+
+  // Debug: comma-separated Slack U-IDs allowed to act as their own team
+  // lead. Lets you exercise the full team-channel approval loop solo (your
+  // own row in Employee data may list you as your own lead). Remove the env
+  // var to re-enable the guard. Empty/unset = guard active.
+  TEST_SELF_APPROVAL_BYPASS_USERS: z.string().optional().default(""),
 });
 
 export type Config = Readonly<{
@@ -118,6 +124,7 @@ export type Config = Readonly<{
   PORT: number;
   NODE_ENV: string;
   LOG_LEVEL: string;
+  TEST_SELF_APPROVAL_BYPASS_USERS: readonly string[];
 }>;
 
 /**
@@ -126,6 +133,13 @@ export type Config = Readonly<{
  *
  * Exposed for tests; production callers should import the `config` singleton.
  */
+function parseUserIdList(raw: string): readonly string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = Schema.safeParse({
     SLACK_BOT_TOKEN: env.SLACK_BOT_TOKEN,
@@ -140,6 +154,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     PORT: env.PORT,
     NODE_ENV: env.NODE_ENV,
     LOG_LEVEL: env.LOG_LEVEL,
+    TEST_SELF_APPROVAL_BYPASS_USERS: env.TEST_SELF_APPROVAL_BYPASS_USERS,
   });
 
   if (!parsed.success) {
@@ -170,6 +185,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     PORT: Number.isFinite(port) ? port : 3000,
     NODE_ENV: data.NODE_ENV,
     LOG_LEVEL: data.LOG_LEVEL,
+    TEST_SELF_APPROVAL_BYPASS_USERS: Object.freeze(
+      parseUserIdList(data.TEST_SELF_APPROVAL_BYPASS_USERS),
+    ),
   });
   return cfg;
 }
@@ -192,6 +210,7 @@ export function loadConfigOrThrow(env: NodeJS.ProcessEnv): Config {
     PORT: env.PORT,
     NODE_ENV: env.NODE_ENV,
     LOG_LEVEL: env.LOG_LEVEL,
+    TEST_SELF_APPROVAL_BYPASS_USERS: env.TEST_SELF_APPROVAL_BYPASS_USERS,
   });
   if (!parsed.success) {
     const msg = parsed.error.issues
@@ -215,5 +234,8 @@ export function loadConfigOrThrow(env: NodeJS.ProcessEnv): Config {
     PORT: Number.isFinite(port) ? port : 3000,
     NODE_ENV: data.NODE_ENV,
     LOG_LEVEL: data.LOG_LEVEL,
+    TEST_SELF_APPROVAL_BYPASS_USERS: Object.freeze(
+      parseUserIdList(data.TEST_SELF_APPROVAL_BYPASS_USERS),
+    ),
   });
 }

@@ -136,6 +136,17 @@ export function transition(
       ]);
     }
 
+    case "FM_APPROVE_FROM_MANUAL_REVIEW": {
+      // Out-of-band recovery: a ticket landed in MANUAL_REVIEW because no
+      // team-lead path was viable, and the FM has decided to approve it
+      // anyway. Same downstream as a final-step APPROVE — the caller gets
+      // the standard FM Mark-as-Paid DM side effect.
+      if (status !== "MANUAL_REVIEW") {
+        return illegal(status, event.type);
+      }
+      return ok("APPROVED", [{ type: "DM_FINANCIAL_MANAGER_FOR_PAYMENT" }]);
+    }
+
     case "ESCALATE_TO_MANUAL_REVIEW": {
       // Out-of-band recovery escalation — legal from any non-terminal state.
       // Caller is responsible for the underlying issue (failed DM, lost route,

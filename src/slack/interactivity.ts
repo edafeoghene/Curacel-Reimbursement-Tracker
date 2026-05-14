@@ -16,7 +16,6 @@ import { v4 as uuidv4 } from "uuid";
 
 import type { Config } from "../config.js";
 import { appendApproval, listApprovalsForTicket, updateApprovalDecision } from "../sheets/approvals.js";
-import { getCachedRoutes } from "../sheets/routes.js";
 import { getTicketByTrackingId, updateTicket } from "../sheets/tickets.js";
 import { transition } from "../state/machine.js";
 import {
@@ -29,7 +28,6 @@ import { safeAudit } from "../sheets/audit.js";
 
 import { postFeedLine } from "./feed.js";
 import { dmUser, postEphemeral, updateMessage } from "./messaging.js";
-import { escalateToManualReview } from "./events.js";
 import { fetchUserName } from "./users.js";
 import {
   approverDmAfterApprove,
@@ -46,7 +44,8 @@ import {
   financialManagerClarifyHintBlocks,
   financialManagerDmAfterMarkPaid,
   financialManagerDmBlocks,
-  manualReviewDmBlocks,
+  manualReviewDmAfterFmApprove,
+  ACTION_FM_APPROVE_MANUAL,
   MODAL_CLARIFY_CALLBACK_ID,
   MODAL_DELEGATE_CALLBACK_ID,
   MODAL_REJECT_CALLBACK_ID,
@@ -154,38 +153,11 @@ function makeApproveHandler({ config }: Deps) {
       return;
     }
 
-    // Look up the route to compute is_final_step. Fail loudly to MANUAL_REVIEW
-    // (via the state machine) if the ticket's route_id is no longer in the
-    // cache (route was deleted or renamed mid-flight). Per PLAN.md §14.
-    const route = getCachedRoutes().find((r) => r.route_id === ticket.route_id);
-    if (!route) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[interactivity] expense_approve: route ${ticket.route_id} not in cache; routing to MANUAL_REVIEW`,
-      );
-      await escalateToManualReview({
-        client,
-        config,
-        ticket,
-        reason: `Route \`${ticket.route_id}\` is no longer in the routes sheet — cannot determine the approval chain.`,
-        fromStatus: ticket.status,
-      });
-      try {
-        if (channelId) {
-          await postEphemeral(
-            client,
-            channelId,
-            clickerId,
-            "This ticket's route is no longer configured. The financial manager has been notified.",
-          );
-        }
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    const isFinal = ticket.current_step === route.approvers.length;
+    // Team-lead flow: a single approval is always the final step. The
+    // multi-step chain logic was retired with the routes tab; old in-flight
+    // tickets that still expect step > 1 would surface as a state-machine
+    // error below and be left for manual cleanup.
+    const isFinal = true;
 
     const result = transition(ticket, {
       type: "APPROVE",
@@ -236,32 +208,8 @@ function makeApproveHandler({ config }: Deps) {
       }
     }
 
-    // Compute ticket patch. Non-final approve advances current_step and
-    // current_approver_user_id; final approve only flips status.
-    const advanceEffect = result.sideEffects.find(
-      (e) => e.type === "ADVANCE_TO_STEP",
-    );
-    let patch: Partial<Ticket> = { status: result.next };
-    let nextApproverId: string | null = null;
-    if (advanceEffect && advanceEffect.type === "ADVANCE_TO_STEP") {
-      const idx = advanceEffect.step_number - 1;
-      const candidate = route.approvers[idx];
-      if (!candidate) {
-        // Shouldn't happen — is_final_step computed off the same route — but
-        // guard so we don't write a corrupt ticket.
-        // eslint-disable-next-line no-console
-        console.error(
-          `[interactivity] ADVANCE_TO_STEP ${advanceEffect.step_number} has no approver in route ${route.route_id}`,
-        );
-        return;
-      }
-      nextApproverId = candidate;
-      patch = {
-        ...patch,
-        current_step: advanceEffect.step_number,
-        current_approver_user_id: candidate,
-      };
-    }
+    // Single-step team-lead flow: every approve flips status to APPROVED.
+    const patch: Partial<Ticket> = { status: result.next };
 
     // Update ticket (single source of truth = state machine).
     let updatedTicket: Ticket;
@@ -291,13 +239,11 @@ function makeApproveHandler({ config }: Deps) {
         from: ticket.status,
         to: result.next,
         is_final_step: isFinal,
-        ...(nextApproverId
-          ? { advance_to_step: updatedTicket.current_step, next_approver: nextApproverId }
-          : {}),
       },
     });
 
-    // Edit the approver DM to remove the button.
+    // Edit the team-channel post (or DM, for legacy in-flight tickets) to
+    // remove the buttons and surface the approval.
     if (channelId && messageTs) {
       try {
         const name = pending?.approver_name ?? `<@${clickerId}>`;
@@ -309,62 +255,11 @@ function makeApproveHandler({ config }: Deps) {
         await updateMessage(client, channelId, messageTs, blocks, fallbackText);
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn("[interactivity] approver DM update failed:", err);
+        console.warn("[interactivity] approval message update failed:", err);
       }
     }
 
-    if (nextApproverId) {
-      // Non-final: DM the next approver and append a fresh approval row.
-      await postFeedLine(
-        client,
-        config,
-        `:white_check_mark: Step ${ticket.current_step} approved: \`${trackingId}\` by <@${clickerId}> → forwarding to <@${nextApproverId}>`,
-      );
-      try {
-        const { blocks, fallbackText } = approverDmBlocks(updatedTicket);
-        const dm = await dmUser(client, nextApproverId, blocks, fallbackText);
-        const nextApproverName = await fetchUserName(client, nextApproverId);
-        await appendApproval({
-          approval_id: uuidv4(),
-          tracking_id: trackingId,
-          step_number: updatedTicket.current_step,
-          approver_user_id: nextApproverId,
-          approver_name: nextApproverName,
-          decision: "PENDING",
-          decided_at: null,
-          comment: "",
-          delegated_to_user_id: null,
-          dm_channel_id: dm.channel,
-          message_ts: dm.ts,
-        });
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(
-          "[interactivity] DM to next approver failed:",
-          err,
-        );
-        // The previous step is already recorded as APPROVED and the ticket's
-        // current_step has advanced — re-DMing is the financial manager's job
-        // via /expense-resume once that lands. For now, surface to FM.
-        try {
-          const { blocks, fallbackText } = manualReviewDmBlocks(
-            updatedTicket,
-            `Failed to DM next approver <@${nextApproverId}> at step ${updatedTicket.current_step}: ${(err as Error).message}`,
-          );
-          await dmUser(
-            client,
-            config.FINANCIAL_MANAGER_USER_ID,
-            blocks,
-            fallbackText,
-          );
-        } catch {
-          // ignore — already logged
-        }
-      }
-      return;
-    }
-
-    // Final approve: DM the financial manager with "Mark as Paid".
+    // DM the financial manager with "Mark as Paid".
     await postFeedLine(
       client,
       config,
@@ -1286,6 +1181,204 @@ function makeMarkPaidHandler({ config }: Deps) {
   };
 }
 
+// ---------- FM approve from manual review (team-lead flow) ----------
+
+/**
+ * "Approve & Pay" button on the manual-review DM. Lets the FM force-approve
+ * a ticket that landed in MANUAL_REVIEW (no team lead found, lead == requester,
+ * missing team channel, etc.). Transitions MANUAL_REVIEW → APPROVED via the
+ * state machine and then fires the standard FM Mark-as-Paid DM, after which
+ * the existing payment-proof flow takes over unchanged.
+ */
+function makeFmApproveManualHandler({ config }: Deps) {
+  return async ({
+    ack,
+    body,
+    client,
+    action,
+  }: {
+    ack: () => Promise<void>;
+    body: BlockAction;
+    client: WebClient;
+    action: ButtonAction;
+  }): Promise<void> => {
+    await ack();
+
+    const trackingId = action.value;
+    if (!trackingId) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[interactivity] expense_fm_approve_manual: missing tracking_id value",
+      );
+      return;
+    }
+
+    const clickerId = body.user.id;
+    const channelId = body.channel?.id ?? "";
+    const messageTs = body.message?.ts ?? "";
+
+    if (clickerId !== config.FINANCIAL_MANAGER_USER_ID) {
+      await safeAudit({
+        tracking_id: trackingId,
+        actor_user_id: clickerId,
+        event_type: AUDIT_EVENTS.AUTHORIZATION_REJECTED,
+        details: {
+          action: "expense_fm_approve_manual",
+          expected: config.FINANCIAL_MANAGER_USER_ID,
+          got: clickerId,
+        },
+      });
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            "Only the financial manager can approve a manual-review ticket.",
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const ticket = await getTicketByTrackingId(trackingId);
+    if (!ticket) {
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            `Ticket \`${trackingId}\` could not be found.`,
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const result = transition(ticket, {
+      type: "FM_APPROVE_FROM_MANUAL_REVIEW",
+      fm_user_id: clickerId,
+    });
+    if (!result.ok) {
+      try {
+        if (channelId) {
+          await postEphemeral(
+            client,
+            channelId,
+            clickerId,
+            `This ticket cannot be approved from its current state (status: ${ticket.status}).`,
+          );
+        }
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const decidedAt = new Date();
+    const decidedAtIso = decidedAt.toISOString();
+
+    let updatedTicket: Ticket;
+    try {
+      updatedTicket = await updateTicket(trackingId, ticket.row_version, {
+        status: result.next,
+        // Stamp the FM as the approver so workload / audit reads are
+        // consistent with how a regular approve would have looked.
+        current_approver_user_id: clickerId,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[interactivity] updateTicket(fm-manual-approve) failed:", err);
+      return;
+    }
+
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: clickerId,
+      event_type: AUDIT_EVENTS.APPROVAL_GRANTED,
+      details: {
+        step: ticket.current_step,
+        decided_at: decidedAtIso,
+        path: "fm_manual_review_override",
+      },
+    });
+    await safeAudit({
+      tracking_id: trackingId,
+      actor_user_id: clickerId,
+      event_type: AUDIT_EVENTS.STATE_TRANSITION,
+      details: {
+        event: "FM_APPROVE_FROM_MANUAL_REVIEW",
+        from: ticket.status,
+        to: result.next,
+      },
+    });
+
+    // Edit the manual-review DM in place — strip the button, show closure.
+    if (channelId && messageTs) {
+      try {
+        const { blocks, fallbackText } = manualReviewDmAfterFmApprove(
+          updatedTicket,
+          decidedAt,
+          clickerId,
+        );
+        await updateMessage(client, channelId, messageTs, blocks, fallbackText);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[interactivity] manual-review DM update (fm-approve) failed:",
+          err,
+        );
+      }
+    }
+
+    await postFeedLine(
+      client,
+      config,
+      `:white_check_mark: Approved (manual): \`${trackingId}\` by <@${clickerId}> — awaiting payment`,
+    );
+
+    // Fire the standard FM Mark-as-Paid DM + sentinel approval row. Same
+    // pattern as the final-step APPROVE path above. The clicker is the FM,
+    // so we surface them as the sole approver for the "Approved by" context.
+    try {
+      const { blocks, fallbackText } = financialManagerDmBlocks(updatedTicket, [
+        clickerId,
+      ]);
+      const { channel: fmChannel, ts: fmTs } = await dmUser(
+        client,
+        config.FINANCIAL_MANAGER_USER_ID,
+        blocks,
+        fallbackText,
+      );
+
+      await appendApproval({
+        approval_id: uuidv4(),
+        tracking_id: trackingId,
+        step_number: PAYMENT_STEP_SENTINEL,
+        approver_user_id: config.FINANCIAL_MANAGER_USER_ID,
+        approver_name: "financial_manager",
+        decision: "PENDING",
+        decided_at: null,
+        comment: "payment-step (sentinel)",
+        delegated_to_user_id: null,
+        dm_channel_id: fmChannel,
+        message_ts: fmTs,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[interactivity] Mark-as-Paid DM after fm-manual-approve failed:",
+        err,
+      );
+    }
+  };
+}
+
 // ---------- public registration ----------
 // NOTE: the FM payment-proof file_share watcher used to live here. As of the
 // audit fix it lives in events.ts inside the single message dispatcher, so
@@ -1302,6 +1395,7 @@ export function registerInteractivity(app: App, deps: Deps): void {
   const delegateButtonHandler = makeDelegateButtonHandler();
   const delegateModalSubmitHandler = makeDelegateModalSubmitHandler(deps);
   const markPaidHandler = makeMarkPaidHandler(deps);
+  const fmApproveManualHandler = makeFmApproveManualHandler(deps);
 
   app.action(
     "expense_approve",
@@ -1392,6 +1486,20 @@ export function registerInteractivity(app: App, deps: Deps): void {
     async (args: any) => {
       const action = args.action as ButtonAction;
       await markPaidHandler({
+        ack: args.ack,
+        body: args.body as BlockAction,
+        client: args.client as WebClient,
+        action,
+      });
+    },
+  );
+
+  app.action(
+    ACTION_FM_APPROVE_MANUAL,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async (args: any) => {
+      const action = args.action as ButtonAction;
+      await fmApproveManualHandler({
         ack: args.ack,
         body: args.body as BlockAction,
         client: args.client as WebClient,

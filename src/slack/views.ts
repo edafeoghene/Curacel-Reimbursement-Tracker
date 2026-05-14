@@ -26,6 +26,7 @@ export const ACTION_REJECT = "expense_reject";
 export const ACTION_CLARIFY = "expense_clarify";
 export const ACTION_DELEGATE = "expense_delegate";
 export const ACTION_MARK_PAID = "expense_mark_paid";
+export const ACTION_FM_APPROVE_MANUAL = "expense_fm_approve_manual";
 
 export const MODAL_REJECT_CALLBACK_ID = "expense_reject_modal";
 export const REJECT_REASON_BLOCK_ID = "reject_reason_block";
@@ -160,6 +161,124 @@ export function approverDmBlocks(ticket: Ticket): {
     ticket.amount,
     ticket.currency,
   )}`;
+  return { blocks, fallbackText };
+}
+
+// ---------- team-channel approval post (team-lead flow) ----------
+
+/**
+ * Buttoned post placed in the requester's team Slack channel. The team lead
+ * is @-mentioned in a leading section so they get a Slack notification;
+ * everyone in the channel can see the post for visibility, but the action
+ * handlers refuse non-lead clicks (see interactivity.ts).
+ *
+ * Buttons reuse the same action_ids as the DM approval message, so the
+ * existing Approve / Reject / Clarify / Delegate handlers fire without
+ * branching on context.
+ */
+export function teamChannelApprovalBlocks(
+  ticket: Ticket,
+  leadSlackId: string,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("Expense approval needed"),
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `<@${leadSlackId}> please review this expense from <@${ticket.requester_user_id}>.`,
+      },
+    },
+    summaryFields(ticket),
+    descriptionBlock(ticket),
+  ];
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  blocks.push(divider());
+  blocks.push({
+    type: "actions",
+    block_id: `approval_actions_${ticket.tracking_id}`,
+    elements: [
+      {
+        type: "button",
+        action_id: ACTION_APPROVE,
+        style: "primary",
+        text: { type: "plain_text", text: "Approve" },
+        value: ticket.tracking_id,
+      },
+      {
+        type: "button",
+        action_id: ACTION_CLARIFY,
+        text: { type: "plain_text", text: "Clarify" },
+        value: ticket.tracking_id,
+      },
+      {
+        type: "button",
+        action_id: ACTION_DELEGATE,
+        text: { type: "plain_text", text: "Delegate" },
+        value: ticket.tracking_id,
+      },
+      {
+        type: "button",
+        action_id: ACTION_REJECT,
+        style: "danger",
+        text: { type: "plain_text", text: "Reject" },
+        value: ticket.tracking_id,
+      },
+    ],
+  });
+
+  const fallbackText = `Expense approval needed: ${ticket.tracking_id} — ${fmtAmount(
+    ticket.amount,
+    ticket.currency,
+  )}`;
+  return { blocks, fallbackText };
+}
+
+// ---------- FM informational DM (team-lead flow) ----------
+
+/**
+ * Sent to the financial manager when a new expense lands. No buttons — the
+ * team lead is the sole approver. The permalink (resolved by the caller via
+ * chat.getPermalink) lets the FM jump straight to the team-channel post for
+ * context, and the FM still gets the buttoned "Mark as Paid" DM later in
+ * the lifecycle.
+ */
+export function fmInfoDmBlocks(
+  ticket: Ticket,
+  leadSlackId: string,
+  team: string,
+  permalink: string | null,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("New expense submitted"),
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `<@${ticket.requester_user_id}> submitted an expense. Awaiting <@${leadSlackId}>'s approval${team ? ` in *${team}*` : ""}.`,
+      },
+    },
+    summaryFields(ticket),
+    descriptionBlock(ticket),
+  ];
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  if (permalink) {
+    blocks.push({
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: `:link: <${permalink}|Open team-channel thread>` },
+      ],
+    });
+  }
+
+  const fallbackText = `New expense ${ticket.tracking_id} — ${fmtAmount(
+    ticket.amount,
+    ticket.currency,
+  )} awaiting <@${leadSlackId}>`;
   return { blocks, fallbackText };
 }
 
@@ -602,7 +721,57 @@ export function manualReviewDmBlocks(
   const ctx = receiptContextBlock(ticket);
   if (ctx) blocks.push(ctx);
 
+  blocks.push(divider());
+  blocks.push({
+    type: "actions",
+    block_id: `manual_review_actions_${ticket.tracking_id}`,
+    elements: [
+      {
+        type: "button",
+        action_id: ACTION_FM_APPROVE_MANUAL,
+        style: "primary",
+        text: { type: "plain_text", text: "Approve & Pay" },
+        value: ticket.tracking_id,
+      },
+    ],
+  });
+
   const fallbackText = `Manual review needed: ${ticket.tracking_id}`;
+  return { blocks, fallbackText };
+}
+
+/**
+ * Replacement for the manual-review DM once the FM clicks "Approve & Pay".
+ * Strips the button and surfaces who approved when. The original "reason"
+ * line is dropped — it lives in the audit log and is no longer actionable
+ * once approved. The follow-up Mark-as-Paid DM is a separate message; this
+ * is purely visual closure on the alert.
+ */
+export function manualReviewDmAfterFmApprove(
+  ticket: Ticket,
+  approvedAt: Date,
+  fmUserId: string,
+): { blocks: Block[]; fallbackText: string } {
+  const blocks: Block[] = [
+    header("Manual review needed"),
+    summaryFields(ticket),
+    descriptionBlock(ticket),
+  ];
+  const ctx = receiptContextBlock(ticket);
+  if (ctx) blocks.push(ctx);
+
+  blocks.push(divider());
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `:white_check_mark: Approved · ${hhmm(approvedAt)} · <@${fmUserId}>`,
+      },
+    ],
+  });
+
+  const fallbackText = `Approved (manual): ${ticket.tracking_id}`;
   return { blocks, fallbackText };
 }
 
