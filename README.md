@@ -2,7 +2,6 @@
 
 Slack bot that automates expense and invoice tracking. Listens to `#expenses`, classifies each message via an LLM, logs the ticket to Google Sheets, runs a DM-based approval pipeline, and notifies the requester at every state change.
 
-**See [PLAN.md](./PLAN.md) for the full design and scope. PLAN.md is the source of truth.**
 
 ---
 
@@ -14,7 +13,6 @@ Slack bot that automates expense and invoice tracking. Listens to `#expenses`, c
 - `googleapis` (Sheets v4) — Sheets is the only persistent store
 - `express` (only for `GET /health`)
 - `vitest` for tests
-- Deploys to Railway via `railway up`
 
 ## Local setup
 
