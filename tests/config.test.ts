@@ -90,9 +90,11 @@ describe("config: token-shape sanity", () => {
     expect(() => loadConfigOrThrow(env)).toThrow(/SLACK_APP_TOKEN/);
   });
 
-  it("rejects an OPENROUTER_API_KEY that does not start with sk-or-", () => {
+  it("rejects an empty OPENROUTER_API_KEY", () => {
+    // Prefix check was dropped when we widened the env to also accept Gemini
+    // (`AIza…`) and other gateway keys. The remaining contract is non-empty.
     const env = makeValidEnv();
-    env.OPENROUTER_API_KEY = "sk-anthropic-bad";
+    env.OPENROUTER_API_KEY = "";
     expect(() => loadConfigOrThrow(env)).toThrow(/OPENROUTER_API_KEY/);
   });
 

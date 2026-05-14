@@ -4,11 +4,15 @@
 // Provider locking, retries, and the per-call 120s timeout all live here.
 // Every other module calls `callLLM`.
 //
-// Default: provider locked to `anthropic`, allow_fallbacks=false (PLAN §6/§18).
-// Override: set OPENROUTER_PROVIDERS to a comma-separated list to lock to
-// a different provider (e.g. `z-ai` for GLM A/B test), or `*` / `any` to
-// remove the lock entirely and let OpenRouter route freely. The default
-// preserves the production invariant — only unset this on a test branch.
+// Default gateway is OpenRouter. Provider locking applies to OpenRouter
+// only — set OPENROUTER_PROVIDERS to a comma-separated list (e.g. `z-ai`)
+// or `*` / `any` to remove the lock. The default locks to `anthropic` per
+// PLAN §6/§18, the production invariant.
+//
+// To point the client at a different OpenAI-compatible gateway (e.g.
+// Google's Gemini compat endpoint), set OPENROUTER_BASE_URL. The
+// `provider` field is skipped automatically whenever the base URL isn't
+// OpenRouter — it's a no-op or 400 on every other gateway.
 
 import OpenAI, { APIError } from "openai";
 
@@ -59,6 +63,17 @@ export class LLMCallFailed extends Error {
 const PER_ATTEMPT_TIMEOUT_MS = 120_000;
 const RETRY_BACKOFF_MS = [1_000, 2_000, 4_000] as const;
 
+const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
+
+function getBaseUrl(): string {
+  const fromEnv = process.env.OPENROUTER_BASE_URL?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_BASE_URL;
+}
+
+function isOpenRouter(baseUrl: string): boolean {
+  return baseUrl.startsWith("https://openrouter.ai");
+}
+
 let cachedClient: OpenAI | null = null;
 
 /**
@@ -75,13 +90,17 @@ function getClient(): OpenAI {
     );
   }
 
+  const baseUrl = getBaseUrl();
+  // OpenRouter expects Referer/Title for attribution; other gateways
+  // (Gemini compat, etc.) don't use them and may not appreciate them.
+  const defaultHeaders = isOpenRouter(baseUrl)
+    ? { "HTTP-Referer": "https://curacel.co", "X-Title": "Curacel Expense Bot" }
+    : undefined;
+
   cachedClient = new OpenAI({
     apiKey,
-    baseURL: "https://openrouter.ai/api/v1",
-    defaultHeaders: {
-      "HTTP-Referer": "https://curacel.co",
-      "X-Title": "Curacel Expense Bot",
-    },
+    baseURL: baseUrl,
+    ...(defaultHeaders ? { defaultHeaders } : {}),
   });
   return cachedClient;
 }
@@ -100,6 +119,13 @@ function getModel(override?: string): string {
 type ProviderConfig = { order: string[]; allow_fallbacks: false };
 
 function getProviderConfig(): ProviderConfig | null {
+  // Provider routing is OpenRouter-specific. If the client is pointed at any
+  // other OpenAI-compatible gateway via OPENROUTER_BASE_URL (e.g. Gemini's
+  // compat endpoint), the field is at best ignored — at worst rejected — so
+  // skip it entirely. This also keeps the anthropic-lock default from
+  // leaking to Gemini if OPENROUTER_PROVIDERS isn't set.
+  if (!isOpenRouter(getBaseUrl())) return null;
+
   const raw = process.env.OPENROUTER_PROVIDERS;
   if (raw === undefined) {
     return { order: ["anthropic"], allow_fallbacks: false };

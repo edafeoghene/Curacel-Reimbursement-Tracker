@@ -82,8 +82,10 @@ const Schema = z.object({
   SLACK_BOT_TOKEN: tokenPrefix("xoxb-", "SLACK_BOT_TOKEN"),
   SLACK_APP_TOKEN: tokenPrefix("xapp-", "SLACK_APP_TOKEN"),
 
-  // OpenRouter
-  OPENROUTER_API_KEY: tokenPrefix("sk-or-", "OPENROUTER_API_KEY"),
+  // LLM gateway. The env var name keeps its OpenRouter origin, but the key
+  // is whatever the active gateway expects (OpenRouter `sk-or-…`, Google
+  // Gemini `AIza…`, etc.) — see OPENROUTER_BASE_URL in src/llm/client.ts.
+  OPENROUTER_API_KEY: z.string().min(1, "OPENROUTER_API_KEY is required"),
   OPENROUTER_MODEL: z.string().min(1, "OPENROUTER_MODEL is required"),
 
   // Google Sheets
